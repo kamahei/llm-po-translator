@@ -343,3 +343,31 @@ OLLAMA_MODEL=translategemma:4b
 # LM Studio
 LMS_MODEL=qwen2.5-7b-instruct
 ```
+
+### Per-language model selection
+
+Use a different model for specific target languages. Hosts that do not have
+the required model are automatically skipped; only qualifying hosts are used
+for that language.
+
+**Via `.env`:**
+
+```ini
+# Ollama: qwen2.5:14b for Chinese, llama3.1:8b for English, default for the rest
+OLLAMA_LANG_MODELS=zh=qwen2.5:14b,en=llama3.1:8b
+
+# LM Studio equivalent
+LMS_LANG_MODELS=zh=lmstudio-community/qwen2.5-14b-instruct-gguf,en=lmstudio-community/meta-llama-3.1-8b-instruct-gguf
+```
+
+**Via command line (Ollama):**
+
+```powershell
+python scripts/translate.py --folder Localization/Game --source-lang ja `
+    --lang-model zh=qwen2.5:14b --lang-model en=llama3.1:8b
+```
+
+When `OLLAMA_LANG_HOSTS` / `LMS_LANG_HOSTS` is **not** configured, hosts are
+automatically selected and distributed to languages based on which models are
+currently loaded - no manual host pinning needed.
+

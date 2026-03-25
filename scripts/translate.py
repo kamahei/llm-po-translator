@@ -13,6 +13,8 @@ import dataclasses
 import os
 import sys
 import time
+
+import openai
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +65,9 @@ class Config:
     # Multi-host fields
     hosts: list[HostEntry] = field(default_factory=list)
     lang_hosts: dict[str, list[HostEntry]] = field(default_factory=dict)
+    # Per-language model overrides
+    ollama_lang_models: dict[str, str] = field(default_factory=dict)  # {lang: ollama_model}
+    lms_lang_models: dict[str, str] = field(default_factory=dict)     # {lang: lms_model}
     # File mode fields
     source_file: str = ""
     old_source_file: str = ""
@@ -171,6 +176,18 @@ def parse_args() -> Config:
         help="Ollama model name. Env: OLLAMA_MODEL (default: qwen2.5:7b)",
     )
     parser.add_argument(
+        "--lang-model",
+        action="append",
+        default=[],
+        metavar="LANG=MODEL",
+        help=(
+            "Use a specific Ollama model for a target language (e.g. zh=qwen2.5:7b). "
+            "Repeat for multiple languages. "
+            "Hosts that do not have the required model are skipped automatically. "
+            "Env: OLLAMA_LANG_MODELS (comma-separated LANG=MODEL pairs)."
+        ),
+    )
+    parser.add_argument(
         "--api-key",
         default=_env("CF_ACCESS_CLIENT_ID"),
         help="Cloudflare Access Client ID for Ollama external servers. Env: CF_ACCESS_CLIENT_ID.",
@@ -213,6 +230,18 @@ def parse_args() -> Config:
         "--lms-model",
         default=_env("LMS_MODEL", ""),
         help="LM Studio model name. Env: LMS_MODEL.",
+    )
+    lms_group.add_argument(
+        "--lms-lang-model",
+        action="append",
+        default=[],
+        metavar="LANG=MODEL",
+        help=(
+            "Use a specific LM Studio model for a target language (e.g. en=llama3.1-8b). "
+            "Repeat for multiple languages. "
+            "Hosts that do not have the required model are skipped automatically. "
+            "Env: LMS_LANG_MODELS (comma-separated LANG=MODEL pairs)."
+        ),
     )
     lms_group.add_argument(
         "--lms-api-key",
@@ -381,6 +410,42 @@ def parse_args() -> Config:
                 elif host_url.strip() not in [e.url for e in lang_hosts.get(lang_key, [])]:
                     lang_hosts[lang_key].append(entry)
 
+    # --- Resolve per-language model overrides (Ollama) --------------------
+    # Priority: --lang-model CLI > OLLAMA_LANG_MODELS env
+    ollama_lang_models: dict[str, str] = {}
+    for item in (args.lang_model or []):
+        if "=" in item:
+            lang, model = item.split("=", 1)
+            ollama_lang_models[lang.strip()] = model.strip()
+        else:
+            parser.error(f"--lang-model must be in LANG=MODEL format, got: {item!r}")
+    if env_ollama_lang_models := _env("OLLAMA_LANG_MODELS"):
+        for item in env_ollama_lang_models.split(","):
+            item = item.strip()
+            if "=" in item:
+                lang, model = item.split("=", 1)
+                lang_key = lang.strip()
+                if lang_key not in ollama_lang_models:
+                    ollama_lang_models[lang_key] = model.strip()
+
+    # --- Resolve per-language model overrides (LM Studio) -----------------
+    # Priority: --lms-lang-model CLI > LMS_LANG_MODELS env
+    lms_lang_models: dict[str, str] = {}
+    for item in (args.lms_lang_model or []):
+        if "=" in item:
+            lang, model = item.split("=", 1)
+            lms_lang_models[lang.strip()] = model.strip()
+        else:
+            parser.error(f"--lms-lang-model must be in LANG=MODEL format, got: {item!r}")
+    if env_lms_lang_models := _env("LMS_LANG_MODELS"):
+        for item in env_lms_lang_models.split(","):
+            item = item.strip()
+            if "=" in item:
+                lang, model = item.split("=", 1)
+                lang_key = lang.strip()
+                if lang_key not in lms_lang_models:
+                    lms_lang_models[lang_key] = model.strip()
+
     first_host = hosts[0]
     return Config(
         folder=args.folder,
@@ -400,6 +465,8 @@ def parse_args() -> Config:
         project=args.project,
         hosts=hosts,
         lang_hosts=lang_hosts,
+        ollama_lang_models=ollama_lang_models,
+        lms_lang_models=lms_lang_models,
         source_file=args.source_file,
         old_source_file=args.old_source_file,
     )
@@ -452,45 +519,125 @@ def _chunk(lst: list, size: int) -> list[list]:
     return [lst[i : i + size] for i in range(0, len(lst), size)]
 
 
-def _assign_hosts(target_langs: list[str], config: Config) -> dict[str, list[HostEntry]]:
+# ---------------------------------------------------------------------------
+# Host probing and model-aware host assignment
+# ---------------------------------------------------------------------------
+
+def _probe_host(entry: HostEntry, timeout: float = 10.0) -> tuple[bool, list[str], str]:
     """
-    Return {lang: [HostEntry, ...]} for all target languages.
+    Probe a host for connectivity and return its full list of available model IDs.
 
-    Manual overrides (--lang-host / --lms-lang-host / OLLAMA_LANG_HOSTS / LMS_LANG_HOSTS)
-    take priority and may specify multiple hosts per language — batches are distributed
-    across all of them in parallel.
+    Uses the OpenAI-compatible ``GET /v1/models`` endpoint (Ollama ≥ 0.1.24
+    and LM Studio both support this).
 
-    For remaining (unassigned) languages:
-    - If pool has <= languages: round-robin, one host per language.
-    - If pool has > languages: wrap hosts across languages so every host is
-      used.  The extra hosts are appended to languages in order, enabling
-      batch-level parallelism for all languages (including a single language
-      with a multi-host pool).
+    Returns ``(True, [model_ids], message)`` on success.
+    Returns ``(False, [], reason)`` on connection failure.
     """
-    result: dict[str, list[HostEntry]] = {}
-    pool = config.hosts  # guaranteed non-empty by parse_args
-
-    # Apply manual overrides first (already a list[str])
-    for lang in target_langs:
-        if lang in config.lang_hosts:
-            result[lang] = config.lang_hosts[lang]
-
-    unassigned = [l for l in target_langs if l not in result]
-    if not unassigned:
-        return result
-
-    if len(pool) <= len(unassigned):
-        # Normal round-robin: one host per language
-        for i, lang in enumerate(unassigned):
-            result[lang] = [pool[i % len(pool)]]
+    headers: dict[str, str] = {}
+    if entry.auth_type == "cf":
+        if entry.api_key and entry.api_secret:
+            headers["CF-Access-Client-Id"] = entry.api_key
+            headers["CF-Access-Client-Secret"] = entry.api_secret
+        api_key = "ollama"
+    elif entry.auth_type == "bearer":
+        api_key = entry.api_key or "lm-studio"
     else:
-        # More hosts than languages: wrap hosts across languages so all
-        # hosts are used and batches can be distributed in parallel.
-        for i, host in enumerate(pool):
-            lang = unassigned[i % len(unassigned)]
-            result.setdefault(lang, []).append(host)
+        api_key = "ollama"
 
-    return result
+    try:
+        client = openai.OpenAI(
+            base_url=f"{entry.url.rstrip('/')}/v1",
+            api_key=api_key,
+            default_headers=headers if headers else None,
+            timeout=timeout,
+        )
+        model_ids = [m.id for m in client.models.list().data]
+        return True, model_ids, f"{len(model_ids)} model(s) available"
+    except Exception as exc:
+        return False, [], f"unreachable — {exc.__class__.__name__}: {exc}"
+
+
+def _probe_and_plan_host_assignment(
+    config: Config,
+    target_langs: list[str],
+) -> tuple[list[str], dict[str, list[HostEntry]]]:
+    """
+    Probe all configured hosts in parallel, then plan which hosts serve each
+    target language based on model availability and per-language model overrides.
+
+    For each language, a host qualifies when:
+    - The host is reachable, AND
+    - The required model (from ``ollama_lang_models`` / ``lms_lang_models``, or
+      the host's default model) appears in the host's available model list.
+
+    When ``OLLAMA_LANG_HOSTS`` / ``LMS_LANG_HOSTS`` pins specific hosts to a
+    language, those hosts are still validated in the same way.
+
+    Returns ``(processable_langs, {lang: [HostEntry_with_model_set]})``.
+    """
+    # Collect unique hosts by URL (one representative HostEntry per URL).
+    url_to_entry: dict[str, HostEntry] = {}
+    for e in config.hosts:
+        url_to_entry[e.url] = e
+    for entries in config.lang_hosts.values():
+        for e in entries:
+            url_to_entry[e.url] = e
+
+    if not url_to_entry:
+        return list(target_langs), {}
+
+    print(f"[translate] Probing {len(url_to_entry)} host(s)...")
+    probe: dict[str, tuple[bool, list[str], str]] = {}
+    with ThreadPoolExecutor(max_workers=len(url_to_entry)) as probe_pool:
+        future_to_url = {
+            probe_pool.submit(_probe_host, entry): entry.url
+            for entry in url_to_entry.values()
+        }
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                ok, models, msg = future.result()
+            except Exception as exc:
+                ok, models, msg = False, [], str(exc)
+            probe[url] = (ok, models, msg)
+
+    # Display results sorted by URL.
+    for url, (ok, models, msg) in sorted(probe.items()):
+        status = "OK" if ok else "NG"
+        if ok and models:
+            models_str = ", ".join(models[:6])
+            if len(models) > 6:
+                models_str += f" … ({len(models)} total)"
+            print(f"[translate]   {status} {url}  models: {models_str}")
+        else:
+            print(f"[translate]   {status} {url}  {msg}")
+
+    def _required_model(e: HostEntry, lang: str) -> str:
+        """Return the model that should be used for *lang* on host *e*."""
+        if e.auth_type == "bearer":  # LM Studio
+            return config.lms_lang_models.get(lang, e.model)
+        else:  # Ollama
+            return config.ollama_lang_models.get(lang, e.model or config.model)
+
+    assignment: dict[str, list[HostEntry]] = {}
+    processable: list[str] = []
+    for lang in target_langs:
+        candidates = config.lang_hosts.get(lang, config.hosts)
+        lang_entries: list[HostEntry] = []
+        for e in candidates:
+            ok, available_models, _ = probe.get(e.url, (False, [], ""))
+            if not ok:
+                continue
+            required = _required_model(e, lang)
+            if required and required not in available_models:
+                continue
+            lang_entries.append(dataclasses.replace(e, model=required))
+
+        if lang_entries:
+            assignment[lang] = lang_entries
+            processable.append(lang)
+
+    return processable, assignment
 
 
 def translate_language(
@@ -784,8 +931,25 @@ def main() -> int:
         )
         return 2
 
-    # Assign hosts to languages (round-robin + manual overrides)
-    host_assignment = _assign_hosts(target_langs, config)
+    # Probe all hosts and plan model-aware assignment per language.
+    processable, host_assignment = _probe_and_plan_host_assignment(config, target_langs)
+
+    skipped_by_probe = [lang for lang in target_langs if lang not in processable]
+    if skipped_by_probe:
+        print(
+            f"[translate] WARNING: Skipping languages (no available host/model): "
+            f"{', '.join(skipped_by_probe)}",
+            file=sys.stderr,
+        )
+    if not processable:
+        print(
+            "[translate] ERROR: No languages can be processed — all configured hosts "
+            "are unreachable or the required model is not loaded.",
+            file=sys.stderr,
+        )
+        return 4
+
+    target_langs = processable
     unique_hosts = sorted({h.url for hosts in host_assignment.values() for h in hosts})
 
     total_entries = sum(po_helper.count_entries(f) for f in source_files)
@@ -795,17 +959,38 @@ def main() -> int:
             f"({len(source_files)} file(s), {total_entries} entries)"
         )
     print(f"[translate] Target languages: {', '.join(target_langs)}")
-    print(f"[translate] Model: {config.model}")
+
+    # Model display: one line when uniform across all languages, per-lang table otherwise.
+    all_lang_models = {
+        lang: sorted({h.model for h in host_assignment[lang]})
+        for lang in target_langs
+    }
+    distinct_models = {m for ms in all_lang_models.values() for m in ms}
+    if len(distinct_models) == 1:
+        print(f"[translate] Model: {next(iter(distinct_models))}")
+    else:
+        print("[translate] Models (per language):")
+        for lang in target_langs:
+            print(f"[translate]   {lang:<6} → {', '.join(all_lang_models[lang])}")
+
     if len(unique_hosts) == 1:
         print(f"[translate] Host: {unique_hosts[0]}")
     else:
         print(f"[translate] Hosts ({len(unique_hosts)} unique, parallel):")
         for lang in target_langs:
             hosts = host_assignment[lang]
+            model_info = (
+                "" if len(distinct_models) == 1
+                else f"  [{', '.join(sorted({h.model for h in hosts}))}]"
+            )
             if len(hosts) == 1:
-                print(f"[translate]   {lang} → {hosts[0].url}")
+                print(f"[translate]   {lang:<6} → {hosts[0].url}{model_info}")
             else:
-                print(f"[translate]   {lang} → {', '.join(h.url for h in hosts)}  ({len(hosts)} hosts, batches distributed)")
+                print(
+                    f"[translate]   {lang:<6} → "
+                    f"{', '.join(h.url for h in hosts)}"
+                    f"  ({len(hosts)} hosts, batches distributed){model_info}"
+                )
     cache_dir = po_helper._checkpoint_dir(config.folder, config.project)
     print(f"[translate] Cache: {cache_dir}")
 

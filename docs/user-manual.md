@@ -13,6 +13,7 @@ This guide explains how to use POTranslatorLLM to translate `.po` localization f
 5. [Quick Start — Remote Server Mode](#5-quick-start--remote-server-mode)
 6. [File Mode — Translate Only Changed & Untranslated Entries](#6-file-mode--translate-only-changed--untranslated-entries)
 7. [Multi-Host Parallel Translation](#7-multi-host-parallel-translation)
+   - [Per-Language Model Selection](#per-language-model-selection)
 8. [CLI Reference](#8-cli-reference)
 9. [Configuration](#9-configuration)
 10. [Understanding the Output](#10-understanding-the-output)
@@ -271,17 +272,21 @@ When translating into many languages, you can use multiple Ollama and/or LM Stud
 
 ### How it works
 
+Before translation starts, **all configured hosts are probed in parallel**. Hosts that are
+unreachable or do not have the required model loaded are automatically excluded. Only the
+hosts that pass the probe are used.
+
 There are two levels of parallelism:
 
 | Level | When | Behaviour |
 |---|---|---|
-| **Language-level** | More languages than hosts | Each language runs in its own thread; hosts assigned round-robin |
-| **Batch-level** | More hosts than languages | Extra hosts are wrapped back onto languages; batches distributed concurrently across all assigned hosts |
+| **Language-level** | Multiple target languages | Each language runs in its own thread concurrently |
+| **Batch-level** | Multiple qualifying hosts per language | Batches are distributed concurrently across all hosts assigned to that language |
 
-- **Ollama and LM Studio hosts can be mixed freely** — they are pooled together and assigned the same way.
-- When the host pool is **smaller than or equal to** the number of languages, hosts are assigned **round-robin** (one per language).
-- When the host pool is **larger than** the number of languages, the extra hosts are wrapped back — every host is used and batches are split across all of them in parallel.
-- You can **pin a language to multiple hosts** explicitly — batches are then split across all those hosts in parallel.
+- **Ollama and LM Studio hosts can be mixed freely** — they are pooled together and treated the same way.
+- Each language is assigned **all qualifying hosts** from the pool; batches are spread across them in parallel for maximum throughput.
+- You can **pin a language to specific hosts** with `OLLAMA_LANG_HOSTS` / `LMS_LANG_HOSTS` — those hosts are still probed and validated before use.
+- You can assign **different models to different languages** with `OLLAMA_LANG_MODELS` / `LMS_LANG_MODELS` — only hosts that have the required model are used for each language (see [Per-Language Model Selection](#per-language-model-selection) below).
 
 ### Configuration — Ollama hosts via `.env`
 
@@ -346,6 +351,56 @@ When a language has multiple hosts, each batch progress line shows which host ha
 
 Progress lines from different languages or hosts appear interleaved — this is normal. The final summary reports each language separately.
 
+### Per-Language Model Selection
+
+Different target languages can use different models. The tool automatically selects only the
+hosts that have the required model loaded — no manual host pinning needed.
+
+**Via `.env`:**
+
+```ini
+# Use qwen2.5:14b for Chinese, llama3.1:8b for English, default for everything else
+OLLAMA_LANG_MODELS=zh=qwen2.5:14b,en=llama3.1:8b
+```
+
+**Via CLI:**
+
+```powershell
+python scripts/translate.py --folder Localization/Game --source-lang ja `
+    --lang-model zh=qwen2.5:14b --lang-model en=llama3.1:8b
+```
+
+**Example scenario — two servers, each with a different model:**
+
+```ini
+OLLAMA_HOSTS=http://host1:11434,http://host2:11434
+# host1 has qwen2.5:7b loaded; host2 has llama3.1:8b loaded
+OLLAMA_LANG_MODELS=zh=qwen2.5:7b,ko=qwen2.5:7b,en=llama3.1:8b,fr=llama3.1:8b
+```
+
+At startup, both hosts are probed. `zh` and `ko` are automatically assigned to `host1`
+(the only host with `qwen2.5:7b`), while `en` and `fr` go to `host2`. No manual
+`OLLAMA_LANG_HOSTS` pinning required.
+
+**Startup output example:**
+
+```
+[translate] Probing 2 host(s)...
+[translate]   OK http://host1:11434  models: qwen2.5:7b
+[translate]   OK http://host2:11434  models: llama3.1:8b
+[translate] Target languages: en, fr, zh, ko
+[translate] Models (per language):
+[translate]   zh     → qwen2.5:7b
+[translate]   ko     → qwen2.5:7b
+[translate]   en     → llama3.1:8b
+[translate]   fr     → llama3.1:8b
+[translate] Hosts (2 unique, parallel):
+[translate]   zh     → http://host1:11434  [qwen2.5:7b]
+[translate]   ko     → http://host1:11434  [qwen2.5:7b]
+[translate]   en     → http://host2:11434  [llama3.1:8b]
+[translate]   fr     → http://host2:11434  [llama3.1:8b]
+```
+
 ---
 
 ## 8. CLI Reference
@@ -385,13 +440,15 @@ python scripts/translate.py --source-file <current.po> [--old-source-file <old.p
 | `--hosts <url...>` | *(none)* | Multiple Ollama server URLs for parallel translation. Overrides `--host`. Env: `OLLAMA_HOSTS` |
 | `--lang-host <LANG=URL>` | *(none)* | Assign an Ollama host to a specific language. Repeat same `LANG` for multiple hosts. Env: `OLLAMA_LANG_HOSTS` |
 | `--model <name>` | `qwen2.5:7b` | Ollama model name. Env: `OLLAMA_MODEL` |
-| `--api-key <id>` | *(from `.env`)* | Cloudflare Access Client ID (Ollama external). Env: `CF_ACCESS_CLIENT_ID` |
+| `--lang-model <LANG=MODEL>` | *(none)* | Use a specific Ollama model for a target language (e.g. `zh=qwen2.5:7b`). Repeat for multiple languages. Hosts without the model are skipped. Env: `OLLAMA_LANG_MODELS` |
+| `--api-key <id>` |*(from `.env`)* | Cloudflare Access Client ID (Ollama external). Env: `CF_ACCESS_CLIENT_ID` |
 | `--api-secret <secret>` | *(from `.env`)* | Cloudflare Access Client Secret. Env: `CF_ACCESS_CLIENT_SECRET` |
 | `--lms-host <url>` | *(none)* | LM Studio server URL (single host). Env: `LMS_HOST` |
 | `--lms-hosts <url...>` | *(none)* | Multiple LM Studio server URLs. Env: `LMS_HOSTS` |
 | `--lms-lang-host <LANG=URL>` | *(none)* | Assign an LM Studio host to a specific language. Env: `LMS_LANG_HOSTS` |
 | `--lms-model <name>` | *(none)* | LM Studio model name. Env: `LMS_MODEL` |
-| `--lms-api-key <key>` | `lm-studio` | LM Studio API key (Bearer token auth). Env: `LMS_API_KEY` |
+| `--lms-lang-model <LANG=MODEL>` | *(none)* | Use a specific LM Studio model for a target language. Repeat for multiple languages. Hosts without the model are skipped. Env: `LMS_LANG_MODELS` |
+| `--lms-api-key <key>` |`lm-studio` | LM Studio API key (Bearer token auth). Env: `LMS_API_KEY` |
 | `--batch-size <n>` | `20` | Entries per LLM request (reduce if you see errors) |
 | `--timeout <seconds>` | `120` | Max wait time per LLM request |
 | `--reset` | false | Discard previous progress and restart from scratch |
@@ -457,6 +514,7 @@ OLLAMA_HOST=http://localhost:11434
 OLLAMA_HOSTS=
 OLLAMA_LANG_HOSTS=
 OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_LANG_MODELS=
 CF_ACCESS_CLIENT_ID=
 CF_ACCESS_CLIENT_SECRET=
 
@@ -465,6 +523,7 @@ LMS_HOST=
 LMS_HOSTS=
 LMS_LANG_HOSTS=
 LMS_MODEL=
+LMS_LANG_MODELS=
 LMS_API_KEY=lm-studio
 
 # --- Translation settings ---
@@ -529,6 +588,28 @@ Or set it permanently in `.env`:
 ```ini
 OLLAMA_MODEL=translategemma:4b
 ```
+
+### Per-Language Model Overrides
+
+Use a different model for specific target languages. Hosts that do not have the required
+model loaded are automatically skipped for that language.
+
+| Variable | CLI equivalent | Purpose |
+|---|---|---|
+| `OLLAMA_LANG_MODELS=zh=qwen2.5:7b,en=llama3.1:8b` | `--lang-model zh=qwen2.5:7b` | Per-language Ollama model |
+| `LMS_LANG_MODELS=zh=qwen2.5-7b-instruct,en=llama3.1-8b` | `--lms-lang-model zh=...` | Per-language LM Studio model |
+
+Languages not listed in `OLLAMA_LANG_MODELS` fall back to `OLLAMA_MODEL`.
+
+**Example — two Ollama servers each loaded with a different model:**
+
+```ini
+OLLAMA_HOSTS=http://host1:11434,http://host2:11434
+OLLAMA_LANG_MODELS=zh=qwen2.5:7b,en=llama3.1:8b
+```
+
+The tool probes both hosts at startup and automatically assigns `zh` to `host1`
+(where `qwen2.5:7b` is loaded) and `en` to `host2` (where `llama3.1:8b` is loaded).
 
 ---
 
