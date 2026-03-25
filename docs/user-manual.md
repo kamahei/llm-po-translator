@@ -561,6 +561,34 @@ This is especially useful in a team setting: every team member uses the same cac
 
 ## 12. Troubleshooting
 
+### "File cannot be loaded. The file is not digitally signed." (PowerShell execution policy error)
+
+When running `.\setup\install-local.ps1` you may see:
+
+```
+.\setup\install-local.ps1 : File ... is not digitally signed. You cannot run this script on the current system.
+```
+
+This is a Windows PowerShell security policy restriction. To allow the script to run, execute the following command **once** in an elevated PowerShell session (Run as Administrator):
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+Then re-run the setup script:
+
+```powershell
+.\setup\install-local.ps1
+```
+
+> **What this does:** `RemoteSigned` allows locally-created scripts to run without a digital signature, while still requiring scripts downloaded from the internet to be signed. This is the recommended policy for developer machines.
+>
+> If you prefer not to change your global policy, you can unblock only this script for the current session:
+> ```powershell
+> Unblock-File .\setup\install-local.ps1
+> .\setup\install-local.ps1
+> ```
+
 ### "Connection refused" or "Failed to connect to Ollama"
 
 - **Local mode:** Make sure Ollama is running. Open a terminal and run `ollama list`. If it fails, restart Ollama from the system tray or run `ollama serve`.

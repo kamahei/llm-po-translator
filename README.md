@@ -27,6 +27,12 @@ cd POTranslatorLLM
 
 This installs Ollama, downloads the `qwen2.5:7b` model, and installs Python dependencies.
 
+> **PowerShell execution policy error?** If you see *"The file is not digitally signed"*, run this once in an elevated PowerShell session (Run as Administrator), then re-run the script:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+> See [Troubleshooting](docs/user-manual.md#file-cannot-be-loaded-the-file-is-not-digitally-signed-powershell-execution-policy-error) in the user manual for details.
+
 ### 2. Install Python Dependencies
 
 ```powershell
