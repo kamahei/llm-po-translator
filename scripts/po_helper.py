@@ -191,6 +191,13 @@ _RUBY_DISPLAYTEXT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
+_MONEY_PLACEHOLDER_RE = re.compile(
+    r"[$＄]\{(?P<value>\d+|[A-Za-z_][A-Za-z0-9_]*)\}"
+)
+_PLAIN_PLACEHOLDER_RE = re.compile(
+    r"(?<![$＄])\{(?P<value>\d+|[A-Za-z_][A-Za-z0-9_]*)\}"
+)
+_PRINTF_PLACEHOLDER_RE = re.compile(r"%\d*\$?[A-Za-z]|%[A-Za-z]")
 
 
 def _has_ruby_markup(text: str) -> bool:
@@ -235,6 +242,36 @@ def _flatten_ruby_to_visible_text(text: str) -> str:
 
     flattened = _RUBY_BLOCK_RE.sub(_replace_block, text)
     return _RUBY_SELFCLOSING_RE.sub(_replace_self_closing, flattened)
+
+
+def _placeholder_signatures(text: str) -> list[str]:
+    """Return normalized placeholder signatures from *text* for integrity checks."""
+    if not text:
+        return []
+    signatures = [
+        f"money:{m.group('value')}" for m in _MONEY_PLACEHOLDER_RE.finditer(text)
+    ]
+    signatures.extend(
+        f"plain:{m.group('value')}" for m in _PLAIN_PLACEHOLDER_RE.finditer(text)
+    )
+    signatures.extend(
+        f"printf:{m.group(0)}" for m in _PRINTF_PLACEHOLDER_RE.finditer(text)
+    )
+    signatures.sort()
+    return signatures
+
+
+def _has_placeholder_mismatch(source_text: str, target_text: str) -> bool:
+    """
+    Return True when placeholder signatures differ between source and target.
+
+    Currency-adjacent forms such as ``＄{0}`` and ``${0}`` normalize to the same
+    logical signature so equivalent variants do not false-positive.
+    """
+    src = _placeholder_signatures(source_text)
+    if not src:
+        return False
+    return src != _placeholder_signatures(target_text)
 
 # Unicode ranges that are *unique* to a specific language and should not appear
 # in translations targeting other languages.  This is used to detect when the
@@ -421,7 +458,8 @@ def _needs_translation(
           Example: ja→en where LLM returned Japanese instead of English.
           Counter-example: ja→zh — both use CJK, so same script is expected.
       (b) target equals source msgid when msgid != msgstr (bad LLM run that
-          translated msgid instead of msgstr).
+           translated msgid instead of msgstr).
+      (c) target dropped or altered required placeholders from the source text.
     - Target entry has fuzzy flag → needs translation
     """
     raw_source_text = source_entry.msgstr if source_entry.msgstr else source_entry.msgid
@@ -438,6 +476,8 @@ def _needs_translation(
     if _has_ruby_markup(target_text):
         return True
     target_visible_text = _flatten_ruby_to_visible_text(target_text)
+    if _has_placeholder_mismatch(source_text, target_visible_text):
+        return True
     if target_text == source_text or target_visible_text == source_text:
         return True
     # (a) If source and target share the same *non-Latin* dominant script, the
@@ -495,7 +535,7 @@ def _needs_requeue_from_checkpoint(
     the entry re-queued for translation.
 
     This is applied to checkpoint entries that would otherwise bypass the LLM
-    entirely. Three conditions trigger a requeue:
+    entirely. Four conditions trigger a requeue:
 
     1. Ruby artifacts — the translation still contains ruby markup instead of
        the flattened visible text.
@@ -504,16 +544,21 @@ def _needs_requeue_from_checkpoint(
         language-specific Unicode range that should not appear in *target_lang*
         (e.g. hiragana / katakana in a Chinese translation).
 
-    3. Wrong script — the source text is in a clearly non-Latin script, the
-        target language also expects a non-Latin script, but the stored
-        translation is in a different script (e.g. English "Good morning" stored
-        as the Chinese Traditional translation).  Guarded by source script so
-       that Latin-original entries (brand names, codes) are never unnecessarily
-       re-translated.
+    3. Placeholder mismatch — the stored translation no longer contains the
+        same logical placeholders as the source text.
+
+    4. Wrong script — the source text is in a clearly non-Latin script, the
+         target language also expects a non-Latin script, but the stored
+         translation is in a different script (e.g. English "Good morning" stored
+         as the Chinese Traditional translation).  Guarded by source script so
+        that Latin-original entries (brand names, codes) are never unnecessarily
+        re-translated.
     """
     if not cp_value:
         return False
     if _has_ruby_markup(cp_value):
+        return True
+    if _has_placeholder_mismatch(source_text, cp_value):
         return True
     if _has_foreign_unique_chars(cp_value, target_lang):
         return True

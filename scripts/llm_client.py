@@ -33,12 +33,31 @@ The `msgctxt` field is an identifier — do NOT translate or modify it.
 
 Rules:
 - Translate only the `msgstr` value. Copy `msgctxt` unchanged to the output.
-- Preserve all placeholders like {{Variable}}, %d, %s, %1$s exactly as-is in their \
-token form, but place them where the target language's natural word order requires. \
-A placeholder represents a runtime value (a number, a name, etc.) — treat it as if \
-it were an actual value when deciding word order. \
-Example: {{0}}日目 (Japanese for "Day X", where {{0}} is a number) → "Day {{0}}" \
-in English, not "{{0}} day".
+- Preserve all placeholders like {{Variable}}, {{0}}, %d, %s, %1$s exactly as-is in \
+their token form, but place them where the target language's natural word order \
+requires.
+- Some placeholders may already be normalized to positional tokens like {{0}} and \
+{{1}}. Treat each placeholder as a runtime value (a number, an item name, a list, a \
+currency symbol, an amount, etc.) when deciding grammar and word order.
+- Use complete, natural target-language phrases. Do not leave verb-less fragments or \
+broken UI text.
+- If a placeholder stands for multiple items, use plural grammar in the surrounding \
+words when context requires it.
+- Do not insert extra spaces inside or around placeholder formatting patterns. Keep \
+`${{0}}` as `${{0}}`, not `$ {{0}}`, unless the target language truly requires \
+different spacing.
+- NEVER strip curly braces from placeholders. `${{0}}` must stay `${{0}}`, and \
+`＄{{0}}` or `${{0}}` must never become `$0`.
+- If the source text is only a formatting pattern made of placeholders and punctuation, \
+keep the same structure unless the target language clearly requires reordering.
+- Example: {{0}}日目 (Japanese for "Day X") → "Day {{0}}", not "{{0}} day".
+- Example: {{0}}を渡す → "Give {{0}}", not "{{0}} to you".
+- Example: 正解は{{0}}と{{1}}だった → "The correct answers were {{0}} and {{1}}".
+- Example: 正解は{{0}}だった → "The correct answer was {{0}}", not "Even though the \
+correct answer was {{0}}".
+- Example: 価格[-${{0}}] → "Price[-${{0}}]", not "Price[-$ {{0}}]".
+- Example: ローン[＄{{0}}] → "Loan [${{0}}]", not "Loan [$0]".
+- Example: a pure format string like "{{0}}{{1}}" should usually remain "{{0}}{{1}}".
 - Preserve markup inside <...> tags (treat as engine commands, not text to translate).
 - Ruby markup from the source is pre-flattened to its visible text before it \
 reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
@@ -111,10 +130,12 @@ class LLMClient:
         # word order.  Results are restored to original names after translation.
         subst_entries: list[dict[str, str]] = []
         ctxt_to_mapping: dict[str, list[str]] = {}
+        ctxt_to_source: dict[str, str] = {}
         for entry in entries:
             modified, mapping = _substitute_placeholders(entry["msgstr"])
             subst_entries.append({"msgctxt": entry["msgctxt"], "msgstr": modified})
             ctxt_to_mapping[entry["msgctxt"]] = mapping
+            ctxt_to_source[entry["msgctxt"]] = modified
 
         system_prompt = self._build_system_prompt(source_lang, target_lang)
         user_message = json.dumps(subst_entries, ensure_ascii=False)
@@ -125,7 +146,14 @@ class LLMClient:
         results: list[dict[str, str]] = []
         for r in raw_results:
             mapping = ctxt_to_mapping.get(r["msgctxt"], [])
-            results.append({"msgctxt": r["msgctxt"], "msgstr": _restore_placeholders(r["msgstr"], mapping)})
+            repaired = _repair_currency_adjacent_placeholders(
+                ctxt_to_source.get(r["msgctxt"], ""),
+                r["msgstr"],
+            )
+            results.append({
+                "msgctxt": r["msgctxt"],
+                "msgstr": _restore_placeholders(repaired, mapping),
+            })
         return results
 
     # ------------------------------------------------------------------
@@ -232,6 +260,9 @@ class LLMClient:
 # Matches named placeholders like {Day}, {PlayerName}, {Count0} but NOT
 # positional {0}, {1} or escaped {{ / }}.
 _NAMED_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+_CURRENCY_ADJACENT_PLACEHOLDER_RE = re.compile(
+    r"[$＄]\{(?P<token>\d+|[A-Za-z_][A-Za-z0-9_]*)\}"
+)
 
 
 def _substitute_placeholders(text: str) -> tuple[str, list[str]]:
@@ -265,6 +296,31 @@ def _restore_placeholders(text: str, mapping: list[str]) -> str:
     for i, original in enumerate(mapping):
         text = text.replace(f"{{{i}}}", original)
     return text
+
+
+def _repair_currency_adjacent_placeholders(source: str, translated: str) -> str:
+    """
+    Repair `$0` / `＄0` style corruption when the source proves a currency-adjacent
+    placeholder such as `${0}` or `＄{0}` was intended.
+    """
+    tokens = sorted(
+        {m.group("token") for m in _CURRENCY_ADJACENT_PLACEHOLDER_RE.finditer(source)},
+        key=len,
+        reverse=True,
+    )
+    if not tokens:
+        return translated
+
+    repaired = translated
+    for token in tokens:
+        if f"${{{token}}}" in repaired or f"＄{{{token}}}" in repaired:
+            continue
+        repaired = re.sub(
+            rf"([$＄])\s*{re.escape(token)}(?![\w}}])",
+            lambda m: f"{m.group(1)}{{{token}}}",
+            repaired,
+        )
+    return repaired
 
 
 # ---------------------------------------------------------------------------

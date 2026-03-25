@@ -634,11 +634,17 @@ def translate_language(
                     and expected_tgt_script not in ("latin", "other")
                     and tgt_script != expected_tgt_script
                 )
-                if ruby_reject or same_script_reject or foreign_chars_reject or wrong_script_reject:
+                placeholder_reject = (
+                    src_text is not None
+                    and po_helper._has_placeholder_mismatch(src_text, translated)
+                )
+                if ruby_reject or same_script_reject or foreign_chars_reject or wrong_script_reject or placeholder_reject:
                     stats["skipped_untranslated"] += 1
                     if config.verbose:
                         if ruby_reject:
                             reason = "ruby-markup"
+                        elif placeholder_reject:
+                            reason = "placeholder-mismatch"
                         elif foreign_chars_reject:
                             reason = "foreign-unique-chars"
                         elif wrong_script_reject:
