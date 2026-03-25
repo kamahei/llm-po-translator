@@ -48,7 +48,13 @@ if ($null -ne $ollamaExe) {
     try {
         Invoke-WebRequest -Uri $downloadUrl -OutFile $installerPath -UseBasicParsing
         Write-Host "      Running Ollama installer (this may take a moment)..." -ForegroundColor Yellow
-        Start-Process -FilePath $installerPath -Wait
+        $proc = Start-Process -FilePath $installerPath -PassThru
+        # Wait up to 5 minutes; installer may leave Ollama running as a background process
+        $installerFinished = $proc.WaitForExit(300000)
+        if (-not $installerFinished) {
+            Write-Host "      Installer is still running after 5 minutes." -ForegroundColor Yellow
+            Write-Host "      Please wait for the installer to finish, then re-run this script." -ForegroundColor Yellow
+        }
         Write-Host "      Ollama installed." -ForegroundColor Green
     } catch {
         Write-Host "ERROR: Failed to download or install Ollama." -ForegroundColor Red
@@ -59,8 +65,12 @@ if ($null -ne $ollamaExe) {
     # Resolve path now that the installer has finished
     $ollamaExe = Get-OllamaExe
     if ($null -eq $ollamaExe) {
-        Write-Host "ERROR: Ollama was installed but ollama.exe could not be located." -ForegroundColor Red
-        Write-Host "       Please restart PowerShell and re-run this script." -ForegroundColor Red
+        if (-not $installerFinished) {
+            Write-Host "ERROR: The installer has not finished yet. Please wait for it to complete, then re-run this script." -ForegroundColor Red
+        } else {
+            Write-Host "ERROR: Ollama was installed but ollama.exe could not be located." -ForegroundColor Red
+            Write-Host "       Please restart PowerShell and re-run this script." -ForegroundColor Red
+        }
         exit 1
     }
     Write-Host "      Ollama found at: $ollamaExe" -ForegroundColor Green
