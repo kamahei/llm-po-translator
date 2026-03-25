@@ -33,7 +33,11 @@ The `msgctxt` field is an identifier — do NOT translate or modify it.
 
 Rules:
 - Translate only the `msgstr` value. Copy `msgctxt` unchanged to the output.
-- Preserve all placeholders like {{Variable}}, %d, %s, %1$s exactly as-is.
+- Preserve all placeholders like {{Variable}}, %d, %s, %1$s exactly as-is in their \
+token form, but place them where the target language's natural word order requires. \
+A placeholder represents a runtime value (a number, a name, etc.) — treat it as if \
+it were an actual value when deciding word order. \
+Example: {{Day}}日目 (Japanese for "Day X") → "Day {{Day}}" in English, not "{{Day}} day".
 - Preserve markup inside <...> tags (treat as engine commands, not text to translate).
 - Ruby markup from the source is pre-flattened to its visible text before it \
 reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
@@ -101,10 +105,27 @@ class LLMClient:
         if not entries:
             return []
 
-        system_prompt = self._build_system_prompt(source_lang, target_lang)
-        user_message = json.dumps(entries, ensure_ascii=False)
+        # Replace named placeholders {Day} → {0} etc. to remove semantic
+        # content from placeholder names that might mislead the LLM about
+        # word order.  Results are restored to original names after translation.
+        subst_entries: list[dict[str, str]] = []
+        ctxt_to_mapping: dict[str, list[str]] = {}
+        for entry in entries:
+            modified, mapping = _substitute_placeholders(entry["msgstr"])
+            subst_entries.append({"msgctxt": entry["msgctxt"], "msgstr": modified})
+            ctxt_to_mapping[entry["msgctxt"]] = mapping
 
-        return self._call_with_retry(system_prompt, user_message, expected_count=len(entries))
+        system_prompt = self._build_system_prompt(source_lang, target_lang)
+        user_message = json.dumps(subst_entries, ensure_ascii=False)
+
+        raw_results = self._call_with_retry(system_prompt, user_message, expected_count=len(entries))
+
+        # Restore original placeholder names in every translated entry.
+        results: list[dict[str, str]] = []
+        for r in raw_results:
+            mapping = ctxt_to_mapping.get(r["msgctxt"], [])
+            results.append({"msgctxt": r["msgctxt"], "msgstr": _restore_placeholders(r["msgstr"], mapping)})
+        return results
 
     # ------------------------------------------------------------------
 
@@ -201,6 +222,48 @@ class LLMClient:
                 raise
 
         raise RuntimeError(f"LLM request failed after {max_network_retries} attempts")
+
+
+# ---------------------------------------------------------------------------
+# Placeholder substitution helpers
+# ---------------------------------------------------------------------------
+
+# Matches named placeholders like {Day}, {PlayerName}, {Count0} but NOT
+# positional {0}, {1} or escaped {{ / }}.
+_NAMED_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def _substitute_placeholders(text: str) -> tuple[str, list[str]]:
+    """
+    Replace named placeholders ({Day}, {Name}, …) with positional equivalents
+    ({0}, {1}, …) so that the LLM cannot be misled by the semantic content of
+    the placeholder name when deciding word order.
+
+    Returns (modified_text, mapping) where mapping[i] is the original token
+    that was replaced with {i}.  Duplicate occurrences of the same placeholder
+    map to the same index.
+    """
+    seen: dict[str, int] = {}
+    mapping: list[str] = []
+
+    def _replace(m: re.Match) -> str:
+        token = m.group(0)
+        if token not in seen:
+            seen[token] = len(mapping)
+            mapping.append(token)
+        return f"{{{seen[token]}}}"
+
+    return _NAMED_PLACEHOLDER_RE.sub(_replace, text), mapping
+
+
+def _restore_placeholders(text: str, mapping: list[str]) -> str:
+    """
+    Replace positional placeholders ({0}, {1}, …) back with the original named
+    tokens.  Safe when mapping is empty (returns text unchanged).
+    """
+    for i, original in enumerate(mapping):
+        text = text.replace(f"{{{i}}}", original)
+    return text
 
 
 # ---------------------------------------------------------------------------
