@@ -16,6 +16,7 @@ This guide explains how to use POTranslatorLLM to translate `.po` localization f
    - [Per-Language Model Selection](#per-language-model-selection)
 8. [CLI Reference](#8-cli-reference)
 9. [Configuration](#9-configuration)
+   - [Character Rules](#character-rules)
 10. [Understanding the Output](#10-understanding-the-output)
 11. [Translation Rules and Behavior](#11-translation-rules-and-behavior)
 12. [Resuming an Interrupted Translation](#12-resuming-an-interrupted-translation)
@@ -455,7 +456,8 @@ python scripts/translate.py --source-file <current.po> [--old-source-file <old.p
 | `--dry-run` | false | Show what would be translated without writing any files |
 | `--verbose` | false | Show detailed per-batch progress |
 | `--context <text>` | *(none)* | Translation context hint, e.g., `"video game dialogue"` |
-| `--project <name>` | *(none)* | Project name for the checkpoint cache folder. When set, cache is stored in `%TEMP%\po_translator_<name>` — predictable and consistent across machines. Env: `TRANSLATE_PROJECT`. |
+| `--char-rules-file <path>` | *(none)* | Path to a JSON rules file for per-character/context guidance (see [Character Rules](#character-rules)). Env: `TRANSLATE_CHAR_RULES_FILE`. |
+| `--project <name>` |*(none)* | Project name for the checkpoint cache folder. When set, cache is stored in `%TEMP%\po_translator_<name>` — predictable and consistent across machines. Env: `TRANSLATE_PROJECT`. |
 
 ### Examples
 
@@ -480,6 +482,9 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 
 # Add translation context
 python scripts/translate.py --folder Localization/Game --source-lang ja --context "action RPG game dialogue and UI"
+
+# Apply character-specific rules (e.g., female speech for 'Assistant')
+python scripts/translate.py --folder Localization/Game --source-lang ja --char-rules-file config/char_rules.json
 
 # Name the cache folder (recommended for teams — same path on every machine)
 python scripts/translate.py --folder Localization/Game --source-lang ja --project MyGame
@@ -530,10 +535,58 @@ LMS_API_KEY=lm-studio
 TRANSLATE_BATCH_SIZE=20
 TRANSLATE_TIMEOUT=120
 TRANSLATE_CONTEXT=
+TRANSLATE_CHAR_RULES_FILE=
 TRANSLATE_PROJECT=
 ```
 
 > **Security note:** Never commit your `.env` file to version control if it contains credentials. Add `.env` to your `.gitignore`.
+
+### Character Rules
+
+<a name="character-rules"></a>
+
+The `--char-rules-file` option (or `TRANSLATE_CHAR_RULES_FILE` in `.env`) lets you define per-character translation guidance.  
+Each rule maps a **substring pattern** (matched against `msgctxt`) to a **context string** sent to the LLM alongside the matching entry. The first matching rule wins.
+
+**Create a `char_rules.json` file** (copy `config/char_rules.example.json` as a starting point):
+
+```json
+[
+  {
+    "pattern": "DLG_Heroine_",
+    "context": "Speaker: 'Heroine' (female protagonist). Use feminine Japanese speech patterns (〜わ、〜の、〜かしら、〜ね etc.)."
+  },
+  {
+    "pattern": "DLG_Villain_",
+    "context": "Speaker: 'Villain' (gruff male character). Use rough, intimidating masculine speech."
+  }
+]
+```
+
+Then pass it on the command line or set it in `.env`:
+
+```powershell
+python scripts/translate.py --folder Localization/Game --source-lang ja --char-rules-file config/char_rules.json
+```
+
+```ini
+TRANSLATE_CHAR_RULES_FILE=config/char_rules.json
+```
+
+**How it works:**  
+When a `msgctxt` value contains the `pattern` string, that entry is sent to the LLM with an extra `"context"` field:
+
+```json
+[
+  {
+    "msgctxt": "DLG_Heroine_Intro,A1B2C3D4...",
+    "msgstr": "お願い、力を貸して！",
+    "context": "Speaker: 'Heroine' (female protagonist). Use feminine Japanese speech patterns."
+  }
+]
+```
+
+The LLM is instructed to apply this guidance to that entry only, allowing character-specific tone and grammar without affecting other entries in the same batch.
 
 ### Choosing a Model
 

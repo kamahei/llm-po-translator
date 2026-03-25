@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import os
 import sys
 import time
@@ -61,6 +62,7 @@ class Config:
     dry_run: bool = False
     verbose: bool = False
     context: str = ""
+    char_rules: list[dict] = field(default_factory=list)
     project: str = ""
     # Multi-host fields
     hosts: list[HostEntry] = field(default_factory=list)
@@ -285,6 +287,17 @@ def parse_args() -> Config:
         help="Translation context hint injected into the system prompt",
     )
     parser.add_argument(
+        "--char-rules-file",
+        default=_env("TRANSLATE_CHAR_RULES_FILE", ""),
+        metavar="FILE",
+        help=(
+            "Path to a JSON file with per-character translation rules. "
+            "Each rule is {\"pattern\": \"<substring>\", \"context\": \"<guidance>\"}. "
+            "Entries whose msgctxt contains the pattern receive the context field. "
+            "Env: TRANSLATE_CHAR_RULES_FILE."
+        ),
+    )
+    parser.add_argument(
         "--project",
         default=_env("TRANSLATE_PROJECT", ""),
         metavar="NAME",
@@ -297,6 +310,19 @@ def parse_args() -> Config:
     )
 
     args = parser.parse_args()
+
+    # Load character/context rules file if specified.
+    char_rules: list[dict] = []
+    if args.char_rules_file:
+        try:
+            with open(args.char_rules_file, encoding="utf-8") as _f:
+                char_rules = json.load(_f)
+            if not isinstance(char_rules, list):
+                parser.error(
+                    f"--char-rules-file: expected a JSON array, got {type(char_rules).__name__}"
+                )
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"--char-rules-file: failed to load {args.char_rules_file!r}: {exc}")
 
     # Validate mode
     in_file_mode = bool(args.source_file)
@@ -462,6 +488,7 @@ def parse_args() -> Config:
         dry_run=args.dry_run,
         verbose=args.verbose,
         context=args.context,
+        char_rules=char_rules,
         project=args.project,
         hosts=hosts,
         lang_hosts=lang_hosts,

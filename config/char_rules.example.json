@@ -1,0 +1,10 @@
+[
+  {
+    "pattern": "DLG_Heroine_",
+    "context": "Speaker: 'Heroine' (female protagonist). Use feminine Japanese speech patterns (〜わ、〜の、〜かしら、〜ね etc.)."
+  },
+  {
+    "pattern": "DLG_Villain_",
+    "context": "Speaker: 'Villain' (gruff male character). Use rough, intimidating masculine speech."
+  }
+]

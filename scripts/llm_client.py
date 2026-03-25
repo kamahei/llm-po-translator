@@ -66,7 +66,7 @@ reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
 - Preserve tone: game dialogue, UI labels, tutorial text, medical terminology.
 - Return ONLY a JSON array. No markdown fences. No explanations. No extra text.
 - Each object must have exactly two string keys: "msgctxt" and "msgstr".
-- Maintain exactly the same order as the input. One object per input entry.{context_line}
+- Maintain exactly the same order as the input. One object per input entry.{char_context_rule_line}{context_line}
 """
 
 
@@ -103,6 +103,7 @@ class LLMClient:
         )
 
         self._context = config.context
+        self._char_rules: list[dict] = getattr(config, "char_rules", [])
 
     # ------------------------------------------------------------------
 
@@ -133,7 +134,12 @@ class LLMClient:
         ctxt_to_source: dict[str, str] = {}
         for entry in entries:
             modified, mapping = _substitute_placeholders(entry["msgstr"])
-            subst_entries.append({"msgctxt": entry["msgctxt"], "msgstr": modified})
+            subst_entry: dict[str, str] = {"msgctxt": entry["msgctxt"], "msgstr": modified}
+            for rule in self._char_rules:
+                if rule.get("pattern", "") in entry["msgctxt"]:
+                    subst_entry["context"] = rule["context"]
+                    break
+            subst_entries.append(subst_entry)
             ctxt_to_mapping[entry["msgctxt"]] = mapping
             ctxt_to_source[entry["msgctxt"]] = modified
 
@@ -162,9 +168,16 @@ class LLMClient:
         context_line = (
             f"\n- Context: {self._context}" if self._context else ""
         )
+        char_context_rule_line = (
+            "\n- Input entries may have an optional \"context\" field — use it as "
+            "character/scene-specific guidance for that entry's translation only. "
+            "Do NOT include \"context\" in your output."
+            if self._char_rules else ""
+        )
         return _SYSTEM_PROMPT_TEMPLATE.format(
             source_language=po_helper.lang_display_name(source_lang),
             target_language=po_helper.lang_display_name(target_lang),
+            char_context_rule_line=char_context_rule_line,
             context_line=context_line,
         )
 
