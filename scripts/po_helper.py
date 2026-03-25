@@ -175,9 +175,66 @@ def _lang_script(lang: str) -> str:
 
 # Matches self-closing <ruby .../> and paired <ruby ...>…</ruby> tags.
 _RUBY_RE = re.compile(
-    r"<ruby\b[^>]*/?>|<ruby\b[^>]*>.*?</ruby>",
+    r"<ruby\b[^>]*(?:/>|>.*?</ruby>)",
     re.IGNORECASE | re.DOTALL,
 )
+_RUBY_SELFCLOSING_RE = re.compile(
+    r"<ruby\b(?P<attrs>[^>]*)/>",
+    re.IGNORECASE | re.DOTALL,
+)
+_RUBY_BLOCK_RE = re.compile(
+    r"<ruby\b(?P<attrs>[^>]*)>(?P<body>.*?)</ruby>",
+    re.IGNORECASE | re.DOTALL,
+)
+_RUBY_DISPLAYTEXT_RE = re.compile(
+    r"""displaytext\s*=\s*(?P<quote>["'])(?P<value>.*?)(?P=quote)""",
+    re.IGNORECASE | re.DOTALL,
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _has_ruby_markup(text: str) -> bool:
+    """Return True when *text* contains any ruby markup."""
+    return bool(text and _RUBY_RE.search(text))
+
+
+def _ruby_visible_text(attrs: str, body: str = "") -> str:
+    """
+    Return the visible text for a ruby tag.
+
+    Prefer ``displaytext="..."`` when present because this is what the player
+    sees in the game's source strings. Fall back to the plain body text for
+    paired ruby tags.
+    """
+    match = _RUBY_DISPLAYTEXT_RE.search(attrs or "")
+    if match:
+        return match.group("value")
+    if body:
+        return _TAG_RE.sub("", body)
+    return ""
+
+
+def _flatten_ruby_to_visible_text(text: str) -> str:
+    """
+    Replace ruby markup with the visible text that should be translated.
+
+    Examples:
+        ``テキスト<ruby displaytext="漢字" rubytext="かんじ"/>`` → ``テキスト漢字``
+        ``<ruby displaytext="漢字" rubytext="かんじ"/>`` → ``漢字``
+    """
+    if not _has_ruby_markup(text):
+        return text
+
+    def _replace_block(match: re.Match[str]) -> str:
+        visible = _ruby_visible_text(match.group("attrs"), match.group("body"))
+        return visible if visible else match.group("body")
+
+    def _replace_self_closing(match: re.Match[str]) -> str:
+        visible = _ruby_visible_text(match.group("attrs"))
+        return visible if visible else match.group(0)
+
+    flattened = _RUBY_BLOCK_RE.sub(_replace_block, text)
+    return _RUBY_SELFCLOSING_RE.sub(_replace_self_closing, flattened)
 
 # Unicode ranges that are *unique* to a specific language and should not appear
 # in translations targeting other languages.  This is used to detect when the
@@ -266,7 +323,8 @@ class POEntry:
 
     def source_text(self) -> str:
         """Return the actual text the LLM should translate."""
-        return self.msgstr if self.msgstr else self.msgid
+        source = self.msgstr if self.msgstr else self.msgid
+        return _flatten_ruby_to_visible_text(source)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"POEntry(msgctxt={self.msgctxt!r}, msgid={self.msgid!r})"
@@ -353,7 +411,8 @@ def _needs_translation(
     - Source text is empty → skip (nothing to translate)
     - Target entry missing → needs translation
     - Target msgstr is empty → needs translation
-    - Target msgstr equals source text (verbatim) → needs translation
+    - Target msgstr still contains ruby markup → needs translation
+    - Target msgstr equals the source visible text → needs translation
     - Target msgstr differs from source text → already translated, preserve …
       UNLESS:
       (a) target is still in the same non-Latin script as the source AND that
@@ -365,7 +424,8 @@ def _needs_translation(
           translated msgid instead of msgstr).
     - Target entry has fuzzy flag → needs translation
     """
-    source_text = source_entry.msgstr if source_entry.msgstr else source_entry.msgid
+    raw_source_text = source_entry.msgstr if source_entry.msgstr else source_entry.msgid
+    source_text = _flatten_ruby_to_visible_text(raw_source_text)
     if not source_text:
         return False
     if target_entry is None:
@@ -375,14 +435,17 @@ def _needs_translation(
     target_text = target_entry.msgstr
     if not target_text:
         return True
-    if target_text == source_text:
+    if _has_ruby_markup(target_text):
+        return True
+    target_visible_text = _flatten_ruby_to_visible_text(target_text)
+    if target_text == source_text or target_visible_text == source_text:
         return True
     # (a) If source and target share the same *non-Latin* dominant script, the
     # translation may still be in the source language (bad LLM output).
     # BUT: skip this check when the target language is expected to use the same
     # script as the source (e.g. ja→zh: both CJK, Chinese output is correct).
     src_script = _dominant_script(source_text)
-    tgt_script = _dominant_script(target_text)
+    tgt_script = _dominant_script(target_visible_text)
     expected_tgt_script = _lang_script(target_lang) if target_lang else None
     if (
         src_script == tgt_script
@@ -395,8 +458,8 @@ def _needs_translation(
     # translating msgstr.  Only trigger when the scripts differ so we don't
     # incorrectly force re-translation of a valid match (e.g. msgid="Hello" and
     # the correct English translation is also "Hello").
-    src_msgid = source_entry.msgid
-    if src_msgid and src_msgid != source_text and target_text == src_msgid:
+    src_msgid = _flatten_ruby_to_visible_text(source_entry.msgid)
+    if src_msgid and src_msgid != source_text and target_visible_text == src_msgid:
         msgid_script = _dominant_script(src_msgid)
         if msgid_script != src_script:
             return True
@@ -432,30 +495,43 @@ def _needs_requeue_from_checkpoint(
     the entry re-queued for translation.
 
     This is applied to checkpoint entries that would otherwise bypass the LLM
-    entirely.  Two conditions trigger a requeue:
+    entirely. Three conditions trigger a requeue:
 
-    1. Foreign unique characters — the translation contains characters from a
-       language-specific Unicode range that should not appear in *target_lang*
-       (e.g. hiragana / katakana in a Chinese translation).
+    1. Ruby artifacts — the translation still contains ruby markup instead of
+       the flattened visible text.
 
-    2. Wrong script — the source text is in a clearly non-Latin script, the
-       target language also expects a non-Latin script, but the stored
-       translation is in a different script (e.g. English "Good morning" stored
-       as the Chinese Traditional translation).  Guarded by source script so
+    2. Foreign unique characters — the translation contains characters from a
+        language-specific Unicode range that should not appear in *target_lang*
+        (e.g. hiragana / katakana in a Chinese translation).
+
+    3. Wrong script — the source text is in a clearly non-Latin script, the
+        target language also expects a non-Latin script, but the stored
+        translation is in a different script (e.g. English "Good morning" stored
+        as the Chinese Traditional translation).  Guarded by source script so
        that Latin-original entries (brand names, codes) are never unnecessarily
        re-translated.
     """
     if not cp_value:
         return False
+    if _has_ruby_markup(cp_value):
+        return True
     if _has_foreign_unique_chars(cp_value, target_lang):
         return True
+    normalized_cp = _flatten_ruby_to_visible_text(cp_value)
     src_script = _dominant_script(source_text)
+    tgt_script = _dominant_script(normalized_cp)
+    expected_tgt = _lang_script(target_lang)
+    if (
+        src_script == tgt_script
+        and src_script not in ("latin", "other")
+        and expected_tgt != src_script
+    ):
+        return True
     if src_script in ("latin", "other"):
         return False
-    expected_tgt = _lang_script(target_lang)
     if expected_tgt in ("latin", "other"):
         return False
-    return _dominant_script(cp_value) != expected_tgt
+    return tgt_script != expected_tgt
 
 
 # ---------------------------------------------------------------------------
@@ -476,14 +552,16 @@ def get_changed_msgctxts(current_path: str, old_path: str) -> set[str]:
     for entry in old_po:
         if not entry.obsolete:
             key = _entry_key(entry)
-            old_map[key] = entry.msgstr if entry.msgstr else entry.msgid
+            old_text = entry.msgstr if entry.msgstr else entry.msgid
+            old_map[key] = _flatten_ruby_to_visible_text(old_text)
 
     changed: set[str] = set()
     for entry in current_po:
         if entry.obsolete:
             continue
         key = _entry_key(entry)
-        current_text = entry.msgstr if entry.msgstr else entry.msgid
+        current_raw_text = entry.msgstr if entry.msgstr else entry.msgid
+        current_text = _flatten_ruby_to_visible_text(current_raw_text)
         old_text = old_map.get(key)
         # Changed = existed before AND text differs AND new text is non-empty
         if old_text is not None and current_text and current_text != old_text:

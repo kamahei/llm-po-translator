@@ -457,8 +457,10 @@ def translate_language(
                     None,
                 )
                 translated = r["msgstr"]
+                ruby_reject = po_helper._has_ruby_markup(translated)
+                normalized_translated = po_helper._flatten_ruby_to_visible_text(translated)
                 src_script = _dominant_script(src_text or "")
-                tgt_script = _dominant_script(translated)
+                tgt_script = _dominant_script(normalized_translated)
                 expected_tgt_script = po_helper._lang_script(lang)
                 # Reject if LLM returned same non-Latin script as source (bad translation),
                 # but skip this check when source and target legitimately share a script
@@ -483,10 +485,12 @@ def translate_language(
                     and expected_tgt_script not in ("latin", "other")
                     and tgt_script != expected_tgt_script
                 )
-                if same_script_reject or foreign_chars_reject or wrong_script_reject:
+                if ruby_reject or same_script_reject or foreign_chars_reject or wrong_script_reject:
                     stats["skipped_untranslated"] += 1
                     if config.verbose:
-                        if foreign_chars_reject:
+                        if ruby_reject:
+                            reason = "ruby-markup"
+                        elif foreign_chars_reject:
                             reason = "foreign-unique-chars"
                         elif wrong_script_reject:
                             reason = "wrong-script"

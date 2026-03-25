@@ -517,13 +517,13 @@ Progress is saved after each batch in a temporary directory (`%TEMP%\po_translat
 
 ### Placeholder Preservation
 
-The tool instructs the LLM to preserve all placeholders and markup exactly as-is:
+The tool preserves placeholders and engine markup exactly as-is. Ruby is handled separately by flattening it to visible text before translation:
 
 | Type | Example | Preserved? |
 |---|---|---|
 | Variable placeholders | `{PlayerName}`, `%d`, `%s` | ✅ Yes |
 | Engine markup tags | `<b>`, `<color=#FF0000>` | ✅ Yes |
-| Ruby markup | `<ruby displaytext="X" rubytext="Y"/>` | ✅ Yes (tag removed for non-CJK targets) |
+| Ruby markup | `<ruby displaytext="X" rubytext="Y"/>` | ✅ Visible text only (`displaytext` is translated; ruby markup itself is removed before translation) |
 | Line breaks | `\n` in source | ✅ Yes |
 | Names and codenames | `BTG`, `DLG_Assistant` | ✅ Yes |
 

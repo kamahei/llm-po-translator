@@ -33,8 +33,8 @@ Rules:
 - Translate only the `msgstr` value. Copy `msgctxt` unchanged to the output.
 - Preserve all placeholders like {{Variable}}, %d, %s, %1$s exactly as-is.
 - Preserve markup inside <...> tags (treat as engine commands, not text to translate).
-- For ruby markup such as <ruby displaytext="X" rubytext="Y"/>, translate only the \
-visible text if the target language does not use ruby; remove the entire ruby tag in that case.
+- Ruby markup from the source is pre-flattened to its visible text before it \
+reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
 - Preserve line breaks (\\n) exactly as they appear in the source.
 - Preserve names, codenames, and non-localizable identifiers unchanged.
 - Preserve tone: game dialogue, UI labels, tutorial text, medical terminology.
