@@ -74,8 +74,10 @@ You should see `qwen2.5:7b` in the list.
 ### Step 2: Install Python Dependencies (if not done by setup script)
 
 ```powershell
-pip install -r setup\requirements.txt
+python -m pip install -r setup\requirements.txt
 ```
+
+> **`python` not recognized?** Python is not installed or was installed without adding it to PATH. Download from https://www.python.org/downloads/ and check **"Add Python to PATH"** during installation, then reopen PowerShell and try again.
 
 ### Step 3: Run Translation
 
@@ -112,8 +114,10 @@ For **external access**, ask your administrator for:
 ### Step 2: Install Python Dependencies
 
 ```powershell
-pip install -r setup\requirements.txt
+python -m pip install -r setup\requirements.txt
 ```
+
+> **`python` not recognized?** Python is not installed or was installed without adding it to PATH. Download from https://www.python.org/downloads/ and check **"Add Python to PATH"** during installation, then reopen PowerShell and try again.
 
 ### Step 3: Configure Your `.env` File
 

@@ -36,8 +36,10 @@ This installs Ollama, downloads the `qwen2.5:7b` model, and installs Python depe
 ### 2. Install Python Dependencies
 
 ```powershell
-pip install -r setup\requirements.txt
+python -m pip install -r setup\requirements.txt
 ```
+
+> **`python` not recognized?** Python is not installed or was installed without adding it to PATH. Download from https://www.python.org/downloads/ and check **"Add Python to PATH"** during installation, then reopen PowerShell and try again.
 
 ### 3. Run Translation
 
