@@ -222,11 +222,12 @@ There are two levels of parallelism:
 
 | Level | When | Behaviour |
 |---|---|---|
-| **Language-level** | Multiple languages, multiple hosts | Each language runs in its own thread, one per unique host |
-| **Batch-level** | One language, multiple hosts assigned | Batches are distributed concurrently across all hosts for that language |
+| **Language-level** | More languages than hosts | Each language runs in its own thread; hosts assigned round-robin |
+| **Batch-level** | More hosts than languages | Extra hosts are wrapped back onto languages; batches distributed concurrently across all assigned hosts |
 
-- Languages are distributed **round-robin** across the host pool automatically.
-- You can **pin a language to multiple hosts** (repeat `--lang-host` for the same language) — batches are then split across all those hosts in parallel.
+- When the host pool is **smaller than or equal to** the number of languages, hosts are assigned **round-robin** (one per language).
+- When the host pool is **larger than** the number of languages (including the common case of 1 language, 2+ hosts), the extra hosts are wrapped back — every host is used and batches are split across all of them in parallel.
+- You can **pin a language to multiple hosts** explicitly (repeat `--lang-host` for the same language) — batches are then split across all those hosts in parallel.
 - You can **pin a language to a single host** for cache locality (the LLM's KV cache is warmer when the same host always handles the same language).
 
 ### Configuration — via `.env`

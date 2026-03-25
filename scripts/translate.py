@@ -237,7 +237,8 @@ def parse_args() -> Config:
     elif env_hosts := _env("OLLAMA_HOSTS"):
         hosts = [h.strip() for h in env_hosts.split(",") if h.strip()]
     else:
-        hosts = [args.host]
+        # Support comma-separated values in OLLAMA_HOST / --host
+        hosts = [h.strip() for h in args.host.split(",") if h.strip()]
 
     # --- Resolve language-to-host overrides -------------------------------
     # Priority: --lang-host CLI > OLLAMA_LANG_HOSTS env
@@ -336,7 +337,13 @@ def _assign_hosts(target_langs: list[str], config: Config) -> dict[str, list[str
     Manual overrides (--lang-host / OLLAMA_LANG_HOSTS) take priority and may
     specify multiple hosts per language — batches are distributed across all of
     them in parallel.
-    Remaining languages receive a single host, assigned round-robin from the pool.
+
+    For remaining (unassigned) languages:
+    - If pool has <= languages: round-robin, one host per language.
+    - If pool has > languages: wrap hosts across languages so every host is
+      used.  The extra hosts are appended to languages in order, enabling
+      batch-level parallelism for all languages (including a single language
+      with a multi-host pool).
     """
     result: dict[str, list[str]] = {}
     pool = config.hosts  # guaranteed non-empty by parse_args
@@ -346,10 +353,20 @@ def _assign_hosts(target_langs: list[str], config: Config) -> dict[str, list[str
         if lang in config.lang_hosts:
             result[lang] = config.lang_hosts[lang]
 
-    # Round-robin assignment for unassigned langs (single host each)
     unassigned = [l for l in target_langs if l not in result]
-    for i, lang in enumerate(unassigned):
-        result[lang] = [pool[i % len(pool)]]
+    if not unassigned:
+        return result
+
+    if len(pool) <= len(unassigned):
+        # Normal round-robin: one host per language
+        for i, lang in enumerate(unassigned):
+            result[lang] = [pool[i % len(pool)]]
+    else:
+        # More hosts than languages: wrap hosts across languages so all
+        # hosts are used and batches can be distributed in parallel.
+        for i, host in enumerate(pool):
+            lang = unassigned[i % len(unassigned)]
+            result.setdefault(lang, []).append(host)
 
     return result
 
