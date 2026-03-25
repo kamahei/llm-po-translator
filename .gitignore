@@ -1,0 +1,38 @@
+# ── Credentials / local config ──────────────────────────────────────────────
+.env
+
+# ── Localization data (project-specific, not part of this tool) ───────────────
+Localization/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+Env/
+
+# ── IDEs ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── OS junk ──────────────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ── Backup / temp files ───────────────────────────────────────────────────────
+*.orig
+*.bak
+*.tmp
