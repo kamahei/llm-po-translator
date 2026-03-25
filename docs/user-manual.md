@@ -8,16 +8,17 @@ This guide explains how to use POTranslatorLLM to translate `.po` localization f
 
 1. [Overview](#1-overview)
 2. [Prerequisites](#2-prerequisites)
-3. [Quick Start — Local Mode](#3-quick-start--local-mode)
-4. [Quick Start — Remote Server Mode](#4-quick-start--remote-server-mode)
-5. [File Mode — Translate Only Changed & Untranslated Entries](#5-file-mode--translate-only-changed--untranslated-entries)
-6. [Multi-Host Parallel Translation](#6-multi-host-parallel-translation)
-7. [CLI Reference](#7-cli-reference)
-8. [Configuration](#8-configuration)
-9. [Understanding the Output](#9-understanding-the-output)
-10. [Translation Rules and Behavior](#10-translation-rules-and-behavior)
-11. [Resuming an Interrupted Translation](#11-resuming-an-interrupted-translation)
-12. [Troubleshooting](#12-troubleshooting)
+3. [Quick Start — Ollama Local Mode](#3-quick-start--ollama-local-mode)
+4. [Quick Start — LM Studio Local Mode](#4-quick-start--lm-studio-local-mode)
+5. [Quick Start — Remote Server Mode](#5-quick-start--remote-server-mode)
+6. [File Mode — Translate Only Changed & Untranslated Entries](#6-file-mode--translate-only-changed--untranslated-entries)
+7. [Multi-Host Parallel Translation](#7-multi-host-parallel-translation)
+8. [CLI Reference](#8-cli-reference)
+9. [Configuration](#9-configuration)
+10. [Understanding the Output](#10-understanding-the-output)
+11. [Translation Rules and Behavior](#11-translation-rules-and-behavior)
+12. [Resuming an Interrupted Translation](#12-resuming-an-interrupted-translation)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -25,13 +26,15 @@ This guide explains how to use POTranslatorLLM to translate `.po` localization f
 
 POTranslatorLLM translates `.po` (gettext) localization files using a Large Language Model (LLM) running locally on your computer or on a shared team server. No internet connection, cloud API key, or GitHub Copilot subscription is required.
 
+Supported LLM backends: **Ollama** and **LM Studio** (or both simultaneously in multi-host mode).
+
 **Supported workflows:**
 
-| Mode | When to use |
-|---|---|
-| **Local mode** | You have a capable GPU or CPU and want to run the LLM on your own machine |
-| **LAN mode** | Your team has a shared server on the local network |
-| **External mode** | The shared server is accessed via Cloudflare Tunnel from outside the LAN |
+| Mode | Backend | When to use |
+|---|---|---|
+| **Local mode** | Ollama or LM Studio | You have a capable GPU or CPU and want to run the LLM on your own machine |
+| **LAN mode** | Ollama or LM Studio | Your team has a shared server on the local network |
+| **External mode** | Ollama (via Cloudflare Tunnel) | The shared server is accessed from outside the LAN |
 
 ---
 
@@ -51,7 +54,7 @@ For **LAN or external mode** only:
 
 ---
 
-## 3. Quick Start — Local Mode
+## 3. Quick Start — Ollama Local Mode
 
 ### Step 1: Set Up Ollama
 
@@ -59,7 +62,7 @@ Open **PowerShell** and run the setup script:
 
 ```powershell
 cd POTranslatorLLM
-.\setup\install-local.ps1
+.\setup\install-ollama-local.ps1
 ```
 
 This script installs Ollama, downloads the `qwen2.5:7b` model, and installs the required Python packages. It takes a few minutes depending on your internet connection.
@@ -99,14 +102,59 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 
 ---
 
-## 4. Quick Start — Remote Server Mode
+## 4. Quick Start — LM Studio Local Mode
+
+### Step 1: Install LM Studio
+
+1. Download and install LM Studio from https://lmstudio.ai/
+2. Open LM Studio → **Search** tab → search for a model and download it
+   - Recommended: `qwen2.5-7b-instruct`
+3. Start the local server: **Developer** tab → **Start Server** (default port: 1234)
+
+### Step 2: Run the Setup Script
+
+```powershell
+cd POTranslatorLLM
+.\setup\install-lmstudio-local.ps1
+```
+
+This installs Python dependencies and sets up `.env` with the LM Studio configuration.
+
+### Step 3: Configure `.env`
+
+Set the model name in your `.env` file (the name as shown in LM Studio's server log):
+
+```ini
+LMS_HOST=http://localhost:1234
+LMS_MODEL=qwen2.5-7b-instruct
+LMS_API_KEY=lm-studio
+```
+
+> **Finding the model name:** Start the LM Studio server and look at the log, or query the API:
+> ```powershell
+> curl http://localhost:1234/v1/models
+> ```
+
+> **API authentication:** If you enabled API key authentication in LM Studio, set `LMS_API_KEY` to your actual key. Otherwise, use any non-empty value (e.g., `lm-studio`).
+
+### Step 4: Run Translation
+
+```powershell
+python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en
+```
+
+---
+
+## 5. Quick Start — Remote Server Mode
+
+### Ollama LAN / External Server
 
 ### Step 1: Receive Credentials from Your Administrator
 
 For **LAN access**, ask your administrator for:
 - The server's LAN IP address (e.g., `192.168.1.100`)
 
-For **external access**, ask your administrator for:
+For **external access** (Cloudflare Tunnel), ask your administrator for:
 - The Cloudflare Tunnel domain (e.g., `llm.example.com`)
 - Your personal `CF_ACCESS_CLIENT_ID`
 - Your personal `CF_ACCESS_CLIENT_SECRET`
@@ -117,8 +165,6 @@ For **external access**, ask your administrator for:
 python -m pip install -r setup\requirements.txt
 ```
 
-> **`python` not recognized?** Python is not installed or was installed without adding it to PATH. Download from https://www.python.org/downloads/ and check **"Add Python to PATH"** during installation, then reopen PowerShell and try again.
-
 ### Step 3: Configure Your `.env` File
 
 Copy the example config:
@@ -126,18 +172,25 @@ Copy the example config:
 Copy-Item config\config.example.env .env
 ```
 
-Edit `.env` with a text editor. For LAN access:
+Edit `.env`. For Ollama LAN access:
 ```ini
 OLLAMA_HOST=http://192.168.1.100:11434
 OLLAMA_MODEL=qwen2.5:7b
 ```
 
-For external (Cloudflare Tunnel) access:
+For Ollama external (Cloudflare Tunnel) access:
 ```ini
 OLLAMA_HOST=https://llm.example.com
 OLLAMA_MODEL=qwen2.5:7b
 CF_ACCESS_CLIENT_ID=your-client-id-here
 CF_ACCESS_CLIENT_SECRET=your-client-secret-here
+```
+
+For LM Studio LAN access:
+```ini
+LMS_HOST=http://192.168.1.100:1234
+LMS_MODEL=qwen2.5-7b-instruct
+LMS_API_KEY=<api-key-if-configured>
 ```
 
 ### Step 4: Run Translation
@@ -150,7 +203,7 @@ No additional flags are needed — credentials are read from `.env` automaticall
 
 ---
 
-## 5. File Mode — Translate Only Changed & Untranslated Entries
+## 6. File Mode — Translate Only Changed & Untranslated Entries
 
 **File mode** is designed for incremental updates: when the source `.po` file has been updated
 and you only want to (re-)translate what actually changed, without touching entries that already
@@ -212,9 +265,9 @@ Output example:
 
 ---
 
-## 6. Multi-Host Parallel Translation
+## 7. Multi-Host Parallel Translation
 
-When translating into many languages, you can use multiple Ollama servers simultaneously to significantly reduce total translation time.
+When translating into many languages, you can use multiple Ollama and/or LM Studio servers simultaneously to significantly reduce total translation time.
 
 ### How it works
 
@@ -225,33 +278,47 @@ There are two levels of parallelism:
 | **Language-level** | More languages than hosts | Each language runs in its own thread; hosts assigned round-robin |
 | **Batch-level** | More hosts than languages | Extra hosts are wrapped back onto languages; batches distributed concurrently across all assigned hosts |
 
+- **Ollama and LM Studio hosts can be mixed freely** — they are pooled together and assigned the same way.
 - When the host pool is **smaller than or equal to** the number of languages, hosts are assigned **round-robin** (one per language).
-- When the host pool is **larger than** the number of languages (including the common case of 1 language, 2+ hosts), the extra hosts are wrapped back — every host is used and batches are split across all of them in parallel.
-- You can **pin a language to multiple hosts** explicitly (repeat `--lang-host` for the same language) — batches are then split across all those hosts in parallel.
-- You can **pin a language to a single host** for cache locality (the LLM's KV cache is warmer when the same host always handles the same language).
+- When the host pool is **larger than** the number of languages, the extra hosts are wrapped back — every host is used and batches are split across all of them in parallel.
+- You can **pin a language to multiple hosts** explicitly — batches are then split across all those hosts in parallel.
 
-### Configuration — via `.env`
+### Configuration — Ollama hosts via `.env`
 
 ```ini
-# Multiple hosts (comma-separated)
 OLLAMA_HOSTS=http://server1:11434,http://server2:11434,http://server3:11434
-
-# Pin languages to hosts (comma-separated LANG=URL pairs).
-# Repeat the same language to assign multiple hosts (batch distribution).
+# Per-language overrides (Ollama):
 OLLAMA_LANG_HOSTS=en=http://server1:11434,en=http://server2:11434,fr=http://server3:11434
+```
+
+### Configuration — LM Studio hosts via `.env`
+
+```ini
+LMS_HOSTS=http://lmstudio1:1234,http://lmstudio2:1234
+# Per-language overrides (LM Studio):
+LMS_LANG_HOSTS=en=http://lmstudio1:1234,fr=http://lmstudio2:1234
+```
+
+### Configuration — Mixed Ollama + LM Studio via `.env`
+
+```ini
+OLLAMA_HOST=http://server1:11434
+OLLAMA_MODEL=qwen2.5:7b
+LMS_HOST=http://lmstudio1:1234
+LMS_MODEL=qwen2.5-7b-instruct
+LMS_API_KEY=lm-studio
 ```
 
 ### Configuration — via CLI
 
 ```powershell
-# Translate en/fr/de in parallel across two servers (round-robin: en→s1, fr→s2, de→s1)
+# Ollama hosts: en/fr/de in parallel (round-robin: en→s1, fr→s2, de→s1)
 python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr de `
     --hosts http://server1:11434 http://server2:11434
 
-# Pin fr to a single server; auto-assign en and de round-robin
-python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr de `
-    --hosts http://server1:11434 http://server2:11434 `
-    --lang-host fr=http://server3:11434
+# Mixed: Ollama + LM Studio (en → Ollama, fr → LM Studio)
+python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr `
+    --lang-host en=http://ollama:11434 --lms-lang-host fr=http://lmstudio:1234
 
 # Assign TWO hosts to English — batches distributed in parallel across both
 python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr `
@@ -281,7 +348,7 @@ Progress lines from different languages or hosts appear interleaved — this is 
 
 ---
 
-## 7. CLI Reference
+## 8. CLI Reference
 
 ### Basic Usage — Folder mode
 
@@ -314,12 +381,17 @@ python scripts/translate.py --source-file <current.po> [--old-source-file <old.p
 | Argument | Default | Description |
 |---|---|---|
 | `--target-lang <code...>` | all siblings | Target language code(s). Specify one or more separated by spaces. |
-| `--host <url>` | `http://localhost:11434` | Ollama server URL (single host) |
-| `--hosts <url...>` | *(none)* | Multiple Ollama server URLs for parallel translation (space-separated). Overrides `--host`. |
-| `--lang-host <LANG=URL>` | *(none)* | Assign a host to a specific language. Repeat the same `LANG` to assign multiple hosts — batches are distributed across all of them in parallel. |
-| `--model <name>` | `qwen2.5:7b` | Model to use |
-| `--api-key <id>` | *(from `.env`)* | Cloudflare Access Client ID |
-| `--api-secret <secret>` | *(from `.env`)* | Cloudflare Access Client Secret |
+| `--host <url>` | `http://localhost:11434` | Ollama server URL (single host). Env: `OLLAMA_HOST` |
+| `--hosts <url...>` | *(none)* | Multiple Ollama server URLs for parallel translation. Overrides `--host`. Env: `OLLAMA_HOSTS` |
+| `--lang-host <LANG=URL>` | *(none)* | Assign an Ollama host to a specific language. Repeat same `LANG` for multiple hosts. Env: `OLLAMA_LANG_HOSTS` |
+| `--model <name>` | `qwen2.5:7b` | Ollama model name. Env: `OLLAMA_MODEL` |
+| `--api-key <id>` | *(from `.env`)* | Cloudflare Access Client ID (Ollama external). Env: `CF_ACCESS_CLIENT_ID` |
+| `--api-secret <secret>` | *(from `.env`)* | Cloudflare Access Client Secret. Env: `CF_ACCESS_CLIENT_SECRET` |
+| `--lms-host <url>` | *(none)* | LM Studio server URL (single host). Env: `LMS_HOST` |
+| `--lms-hosts <url...>` | *(none)* | Multiple LM Studio server URLs. Env: `LMS_HOSTS` |
+| `--lms-lang-host <LANG=URL>` | *(none)* | Assign an LM Studio host to a specific language. Env: `LMS_LANG_HOSTS` |
+| `--lms-model <name>` | *(none)* | LM Studio model name. Env: `LMS_MODEL` |
+| `--lms-api-key <key>` | `lm-studio` | LM Studio API key (Bearer token auth). Env: `LMS_API_KEY` |
 | `--batch-size <n>` | `20` | Entries per LLM request (reduce if you see errors) |
 | `--timeout <seconds>` | `120` | Max wait time per LLM request |
 | `--reset` | false | Discard previous progress and restart from scratch |
@@ -373,45 +445,32 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 
 ---
 
-## 8. Configuration
+## 9. Configuration
 
 ### `.env` File
 
 Create a `.env` file in the **repo root directory** (the same folder as `README.md`) to set default values for all CLI options. CLI arguments override `.env` values.
 
 ```ini
-# Ollama server URL (single host)
+# --- Ollama backend ---
 OLLAMA_HOST=http://localhost:11434
-
-# Multiple Ollama hosts for parallel translation (comma-separated, overrides OLLAMA_HOST)
-# Example: OLLAMA_HOSTS=http://server1:11434,http://server2:11434
 OLLAMA_HOSTS=
-
-# Pin languages to hosts (comma-separated LANG=URL pairs).
-# Repeat the same language for multiple hosts (batches distributed across all of them).
-# Example: OLLAMA_LANG_HOSTS=en=http://server1:11434,en=http://server2:11434,fr=http://server3:11434
 OLLAMA_LANG_HOSTS=
-
-# Model name
 OLLAMA_MODEL=qwen2.5:7b
-
-# Cloudflare Access credentials (leave empty if not using external server)
 CF_ACCESS_CLIENT_ID=
 CF_ACCESS_CLIENT_SECRET=
 
-# Entries per LLM request
+# --- LM Studio backend (optional) ---
+LMS_HOST=
+LMS_HOSTS=
+LMS_LANG_HOSTS=
+LMS_MODEL=
+LMS_API_KEY=lm-studio
+
+# --- Translation settings ---
 TRANSLATE_BATCH_SIZE=20
-
-# LLM request timeout in seconds
 TRANSLATE_TIMEOUT=120
-
-# Default translation context
 TRANSLATE_CONTEXT=
-
-# Project name for the checkpoint cache directory.
-# When set, checkpoints are stored in %TEMP%\po_translator_<NAME> so the cache
-# path is predictable and consistent across all team members' machines.
-# Leave empty to use an auto-generated hash based on the source folder path.
 TRANSLATE_PROJECT=
 ```
 
@@ -473,7 +532,7 @@ OLLAMA_MODEL=translategemma:4b
 
 ---
 
-## 9. Understanding the Output
+## 10. Understanding the Output
 
 ### Progress Output
 
@@ -504,7 +563,7 @@ Progress is saved after each batch in a temporary directory (`%TEMP%\po_translat
 
 ---
 
-## 10. Translation Rules and Behavior
+## 11. Translation Rules and Behavior
 
 ### What Gets Translated
 
@@ -534,7 +593,7 @@ The tool preserves placeholders and engine markup exactly as-is. Ruby is handled
 
 ---
 
-## 11. Resuming an Interrupted Translation
+## 12. Resuming an Interrupted Translation
 
 If translation is stopped (Ctrl+C, power loss, network disconnect), simply re-run the same command:
 
@@ -564,14 +623,14 @@ This is especially useful in a team setting: every team member uses the same cac
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 ### "File cannot be loaded. The file is not digitally signed." (PowerShell execution policy error)
 
-When running `.\setup\install-local.ps1` you may see:
+When running `.\setup\install-ollama-local.ps1` you may see:
 
 ```
-.\setup\install-local.ps1 : File ... is not digitally signed. You cannot run this script on the current system.
+.\setup\install-ollama-local.ps1 : File ... is not digitally signed. You cannot run this script on the current system.
 ```
 
 This is a Windows PowerShell security policy restriction. To allow the script to run, execute the following command **once** in an elevated PowerShell session (Run as Administrator):
@@ -583,31 +642,45 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 Then re-run the setup script:
 
 ```powershell
-.\setup\install-local.ps1
+.\setup\install-ollama-local.ps1
 ```
 
 > **What this does:** `RemoteSigned` allows locally-created scripts to run without a digital signature, while still requiring scripts downloaded from the internet to be signed. This is the recommended policy for developer machines.
 >
 > If you prefer not to change your global policy, you can unblock only this script for the current session:
 > ```powershell
-> Unblock-File .\setup\install-local.ps1
-> .\setup\install-local.ps1
+> Unblock-File .\setup\install-ollama-local.ps1
+> .\setup\install-ollama-local.ps1
 > ```
 
-### "Connection refused" or "Failed to connect to Ollama"
+### "Connection refused" or "Failed to connect" (Ollama)
 
 - **Local mode:** Make sure Ollama is running. Open a terminal and run `ollama list`. If it fails, restart Ollama from the system tray or run `ollama serve`.
 - **LAN mode:** Check that the server IP is correct and that port `11434` is not blocked by a firewall.
 - **External mode:** Verify your `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are correct in `.env`. Contact your administrator if in doubt.
 
+### "Connection refused" or "Failed to connect" (LM Studio)
+
+- Make sure the LM Studio server is running: **Developer tab → Start Server**.
+- Verify the port in `.env` matches what LM Studio shows (default: 1234).
+- For LAN mode: check that port `1234` is open in the Windows Firewall (`Get-NetFirewallRule -DisplayName "LM Studio LLM Port 1234"`).
+
+### "401 Unauthorized" (LM Studio)
+
+LM Studio has API authentication enabled. Set the correct API key in `.env`:
+```ini
+LMS_API_KEY=your-actual-api-key
+```
+
 ### "Model not found"
 
-The model specified with `--model` is not available on the server. Run `ollama list` (on the server for LAN mode) to see available models, or ask your administrator.
+- **Ollama:** Run `ollama list` (on the server for LAN mode) to see available models, or ask your administrator.
+- **LM Studio:** Open LM Studio and check which model is loaded. The model name in `LMS_MODEL` must match exactly. Query the API: `curl http://localhost:1234/v1/models`.
 
 ### Translation quality is poor
 
 - Try adding context: `--context "action RPG game dialogue, medical terminology"`
-- Try a larger model: `--model qwen2.5:14b`
+- Try a larger model: `--model qwen2.5:14b` (Ollama) or `--lms-model qwen2.5-14b-instruct` (LM Studio)
 - Reduce batch size: `--batch-size 5` (sends fewer entries per request, may improve focus)
 
 ### Translation is very slow

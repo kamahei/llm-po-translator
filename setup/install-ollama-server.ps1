@@ -1,6 +1,6 @@
-# install-server.ps1
+# install-ollama-server.ps1
 # Sets up a shared Ollama server with LAN access and cloudflared for POTranslatorLLM.
-# Run as Administrator from the repository root:  .\setup\install-server.ps1
+# Run as Administrator from the repository root:  .\setup\install-ollama-server.ps1
 
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"

@@ -34,6 +34,16 @@ from llm_client import LLMClient
 # ---------------------------------------------------------------------------
 
 @dataclass
+class HostEntry:
+    """A single LLM host endpoint with its authentication configuration."""
+    url: str
+    api_key: str = ""       # CF-Access-Client-Id (cf) or Bearer token (bearer)
+    api_secret: str = ""    # CF-Access-Client-Secret (cf only)
+    auth_type: str = "none" # "none" | "cf" | "bearer"
+    model: str = ""         # empty = inherit Config.model
+
+
+@dataclass
 class Config:
     folder: str
     source_lang: str
@@ -42,6 +52,7 @@ class Config:
     model: str = "qwen2.5:7b"
     api_key: str = ""
     api_secret: str = ""
+    auth_type: str = "none"
     batch_size: int = 20
     timeout: float = 120.0
     reset: bool = False
@@ -50,8 +61,8 @@ class Config:
     context: str = ""
     project: str = ""
     # Multi-host fields
-    hosts: list[str] = field(default_factory=list)      # all available hosts (non-empty)
-    lang_hosts: dict[str, list[str]] = field(default_factory=dict)  # lang -> [host, ...] override
+    hosts: list[HostEntry] = field(default_factory=list)
+    lang_hosts: dict[str, list[HostEntry]] = field(default_factory=dict)
     # File mode fields
     source_file: str = ""
     old_source_file: str = ""
@@ -83,7 +94,7 @@ def parse_args() -> Config:
     parser = argparse.ArgumentParser(
         prog="translate.py",
         description=(
-            "Translate .po files using a local LLM (Ollama).\n\n"
+            "Translate .po files using a local LLM (Ollama or LM Studio).\n\n"
             "Folder mode:  --folder <path> --source-lang <code> [--target-lang ...]\n"
             "File mode:    --source-file <current.po> --old-source-file <old.po> --target-lang ..."
         ),
@@ -129,7 +140,7 @@ def parse_args() -> Config:
     parser.add_argument(
         "--host",
         default=_env("OLLAMA_HOST", "http://localhost:11434"),
-        help="Ollama server base URL (default: http://localhost:11434)",
+        help="Ollama server base URL. Env: OLLAMA_HOST (default: http://localhost:11434)",
     )
     parser.add_argument(
         "--hosts",
@@ -148,7 +159,7 @@ def parse_args() -> Config:
         default=[],
         metavar="LANG=URL",
         help=(
-            "Assign a host to a specific language (e.g. en=http://host2:11434). "
+            "Assign an Ollama host to a specific language (e.g. en=http://host2:11434). "
             "Repeat the same LANG to assign multiple hosts — batches are distributed "
             "across all assigned hosts in parallel. "
             "Env: OLLAMA_LANG_HOSTS (comma-separated LANG=URL pairs)."
@@ -157,17 +168,60 @@ def parse_args() -> Config:
     parser.add_argument(
         "--model",
         default=_env("OLLAMA_MODEL", "qwen2.5:7b"),
-        help="Ollama model name (default: qwen2.5:7b)",
+        help="Ollama model name. Env: OLLAMA_MODEL (default: qwen2.5:7b)",
     )
     parser.add_argument(
         "--api-key",
         default=_env("CF_ACCESS_CLIENT_ID"),
-        help="Cloudflare Access Client ID (for external server)",
+        help="Cloudflare Access Client ID for Ollama external servers. Env: CF_ACCESS_CLIENT_ID.",
     )
     parser.add_argument(
         "--api-secret",
         default=_env("CF_ACCESS_CLIENT_SECRET"),
-        help="Cloudflare Access Client Secret",
+        help="Cloudflare Access Client Secret for Ollama external servers. Env: CF_ACCESS_CLIENT_SECRET.",
+    )
+
+    # --- LM Studio backend ---
+    lms_group = parser.add_argument_group("LM Studio backend (alternative / additional to Ollama)")
+    lms_group.add_argument(
+        "--lms-host",
+        default=_env("LMS_HOST", ""),
+        help="LM Studio server base URL (e.g. http://localhost:1234). Env: LMS_HOST.",
+    )
+    lms_group.add_argument(
+        "--lms-hosts",
+        nargs="+",
+        default=[],
+        metavar="URL",
+        help=(
+            "Multiple LM Studio server URLs for parallel translation. "
+            "Overrides --lms-host. Env: LMS_HOSTS (comma-separated)."
+        ),
+    )
+    lms_group.add_argument(
+        "--lms-lang-host",
+        action="append",
+        default=[],
+        metavar="LANG=URL",
+        help=(
+            "Assign an LM Studio host to a specific language (e.g. en=http://host:1234). "
+            "Repeat the same LANG to assign multiple hosts. "
+            "Env: LMS_LANG_HOSTS (comma-separated LANG=URL pairs)."
+        ),
+    )
+    lms_group.add_argument(
+        "--lms-model",
+        default=_env("LMS_MODEL", ""),
+        help="LM Studio model name. Env: LMS_MODEL.",
+    )
+    lms_group.add_argument(
+        "--lms-api-key",
+        default=_env("LMS_API_KEY", "lm-studio"),
+        help=(
+            "LM Studio API key for Bearer token authentication. "
+            "Use any non-empty string when LM Studio has no auth enforced. "
+            "Env: LMS_API_KEY (default: lm-studio)."
+        ),
     )
     parser.add_argument(
         "--batch-size",
@@ -229,26 +283,70 @@ def parse_args() -> Config:
     if args.old_source_file and not in_file_mode:
         parser.error("--old-source-file requires --source-file.")
 
-    # --- Resolve host pool ------------------------------------------------
-    # Priority: --hosts CLI > OLLAMA_HOSTS env > --host CLI > OLLAMA_HOST env
-    hosts: list[str] = []
-    if args.hosts:
-        hosts = args.hosts
-    elif env_hosts := _env("OLLAMA_HOSTS"):
-        hosts = [h.strip() for h in env_hosts.split(",") if h.strip()]
-    else:
-        # Support comma-separated values in OLLAMA_HOST / --host
-        hosts = [h.strip() for h in args.host.split(",") if h.strip()]
+    # --- Build per-host HostEntry factories --------------------------------
+    ollama_api_key = args.api_key or ""
+    ollama_api_secret = args.api_secret or ""
+    ollama_auth_type = "cf" if (ollama_api_key and ollama_api_secret) else "none"
+    ollama_model = args.model
 
-    # --- Resolve language-to-host overrides -------------------------------
+    def _ollama_entry(url: str) -> HostEntry:
+        return HostEntry(
+            url=url,
+            api_key=ollama_api_key,
+            api_secret=ollama_api_secret,
+            auth_type=ollama_auth_type,
+            model=ollama_model,
+        )
+
+    lms_api_key = args.lms_api_key or "lm-studio"
+    lms_model = args.lms_model
+
+    def _lms_entry(url: str) -> HostEntry:
+        return HostEntry(
+            url=url,
+            api_key=lms_api_key,
+            api_secret="",
+            auth_type="bearer",
+            model=lms_model,
+        )
+
+    # --- Resolve Ollama host pool -----------------------------------------
+    # Priority: --hosts CLI > OLLAMA_HOSTS env > --host CLI > OLLAMA_HOST env
+    ollama_urls: list[str] = []
+    if args.hosts:
+        ollama_urls = args.hosts
+    elif env_hosts := _env("OLLAMA_HOSTS"):
+        ollama_urls = [h.strip() for h in env_hosts.split(",") if h.strip()]
+    else:
+        ollama_urls = [h.strip() for h in args.host.split(",") if h.strip()]
+
+    # --- Resolve LM Studio host pool --------------------------------------
+    # Priority: --lms-hosts CLI > LMS_HOSTS env > --lms-host CLI > LMS_HOST env
+    lms_urls: list[str] = []
+    if args.lms_hosts:
+        lms_urls = args.lms_hosts
+    elif env_lms_hosts := _env("LMS_HOSTS"):
+        lms_urls = [h.strip() for h in env_lms_hosts.split(",") if h.strip()]
+    elif args.lms_host:
+        lms_urls = [h.strip() for h in args.lms_host.split(",") if h.strip()]
+
+    # --- Merge host pools -------------------------------------------------
+    hosts: list[HostEntry] = (
+        [_ollama_entry(u) for u in ollama_urls]
+        + [_lms_entry(u) for u in lms_urls]
+    )
+    if not hosts:
+        hosts = [_ollama_entry("http://localhost:11434")]
+
+    # --- Resolve language-to-host overrides (Ollama) ----------------------
     # Priority: --lang-host CLI > OLLAMA_LANG_HOSTS env
-    # Multiple --lang-host entries for the same language assign multiple hosts,
-    # and batches are distributed across all of them in parallel.
-    lang_hosts: dict[str, list[str]] = {}
+    # Multiple entries for the same language assign multiple hosts;
+    # batches are distributed across all of them in parallel.
+    lang_hosts: dict[str, list[HostEntry]] = {}
     for item in (args.lang_host or []):
         if "=" in item:
             lang, host_url = item.split("=", 1)
-            lang_hosts.setdefault(lang.strip(), []).append(host_url.strip())
+            lang_hosts.setdefault(lang.strip(), []).append(_ollama_entry(host_url.strip()))
         else:
             parser.error(f"--lang-host must be in LANG=URL format, got: {item!r}")
     if env_lang_hosts := _env("OLLAMA_LANG_HOSTS"):
@@ -256,19 +354,43 @@ def parse_args() -> Config:
             item = item.strip()
             if "=" in item:
                 lang, host_url = item.split("=", 1)
-                if lang.strip() not in lang_hosts:
-                    lang_hosts.setdefault(lang.strip(), []).append(host_url.strip())
-                elif host_url.strip() not in lang_hosts[lang.strip()]:
-                    lang_hosts[lang.strip()].append(host_url.strip())
+                lang_key = lang.strip()
+                entry = _ollama_entry(host_url.strip())
+                if lang_key not in lang_hosts:
+                    lang_hosts.setdefault(lang_key, []).append(entry)
+                elif host_url.strip() not in [e.url for e in lang_hosts[lang_key]]:
+                    lang_hosts[lang_key].append(entry)
 
+    # --- Resolve language-to-host overrides (LM Studio) -------------------
+    # Priority: --lms-lang-host CLI > LMS_LANG_HOSTS env
+    for item in (args.lms_lang_host or []):
+        if "=" in item:
+            lang, host_url = item.split("=", 1)
+            lang_hosts.setdefault(lang.strip(), []).append(_lms_entry(host_url.strip()))
+        else:
+            parser.error(f"--lms-lang-host must be in LANG=URL format, got: {item!r}")
+    if env_lms_lang_hosts := _env("LMS_LANG_HOSTS"):
+        for item in env_lms_lang_hosts.split(","):
+            item = item.strip()
+            if "=" in item:
+                lang, host_url = item.split("=", 1)
+                lang_key = lang.strip()
+                entry = _lms_entry(host_url.strip())
+                if lang_key not in lang_hosts:
+                    lang_hosts.setdefault(lang_key, []).append(entry)
+                elif host_url.strip() not in [e.url for e in lang_hosts.get(lang_key, [])]:
+                    lang_hosts[lang_key].append(entry)
+
+    first_host = hosts[0]
     return Config(
         folder=args.folder,
         source_lang=args.source_lang,
         target_langs=args.target_lang,
-        host=hosts[0],
-        model=args.model,
-        api_key=args.api_key or "",
-        api_secret=args.api_secret or "",
+        host=first_host.url,
+        model=first_host.model or args.model,
+        api_key=first_host.api_key,
+        api_secret=first_host.api_secret,
+        auth_type=first_host.auth_type,
         batch_size=max(1, args.batch_size),
         timeout=max(10.0, args.timeout),
         reset=args.reset,
@@ -330,13 +452,13 @@ def _chunk(lst: list, size: int) -> list[list]:
     return [lst[i : i + size] for i in range(0, len(lst), size)]
 
 
-def _assign_hosts(target_langs: list[str], config: Config) -> dict[str, list[str]]:
+def _assign_hosts(target_langs: list[str], config: Config) -> dict[str, list[HostEntry]]:
     """
-    Return {lang: [host_url, ...]} for all target languages.
+    Return {lang: [HostEntry, ...]} for all target languages.
 
-    Manual overrides (--lang-host / OLLAMA_LANG_HOSTS) take priority and may
-    specify multiple hosts per language — batches are distributed across all of
-    them in parallel.
+    Manual overrides (--lang-host / --lms-lang-host / OLLAMA_LANG_HOSTS / LMS_LANG_HOSTS)
+    take priority and may specify multiple hosts per language — batches are distributed
+    across all of them in parallel.
 
     For remaining (unassigned) languages:
     - If pool has <= languages: round-robin, one host per language.
@@ -345,7 +467,7 @@ def _assign_hosts(target_langs: list[str], config: Config) -> dict[str, list[str
       batch-level parallelism for all languages (including a single language
       with a multi-host pool).
     """
-    result: dict[str, list[str]] = {}
+    result: dict[str, list[HostEntry]] = {}
     pool = config.hosts  # guaranteed non-empty by parse_args
 
     # Apply manual overrides first (already a list[str])
@@ -375,13 +497,13 @@ def translate_language(
     config: Config,
     source_files: list[str],
     lang: str,
-    host_list: list[str],
+    host_list: list[HostEntry],
     changed_keys: set[str] | None = None,
 ) -> dict:
     """
     Translate all source files for one target language.
 
-    host_list: one or more Ollama host URLs for this language.  When multiple
+    host_list: one or more host entries for this language.  When multiple
     hosts are given, batches are submitted to all of them concurrently (one
     request per host at a time) to maximise throughput.
 
@@ -396,7 +518,17 @@ def translate_language(
     stats = {"translated": 0, "from_checkpoint": 0, "preserved": 0, "failed_batches": 0, "skipped_untranslated": 0}
 
     # Build one LLMClient per host for this language.
-    clients = [LLMClient(dataclasses.replace(config, host=h)) for h in host_list]
+    clients = [
+        LLMClient(dataclasses.replace(
+            config,
+            host=h.url,
+            api_key=h.api_key,
+            api_secret=h.api_secret,
+            auth_type=h.auth_type,
+            model=h.model or config.model,
+        ))
+        for h in host_list
+    ]
     multi_host = len(clients) > 1
 
     for source_path in source_files:
@@ -554,7 +686,7 @@ def translate_language(
                     )
                     stats["failed_batches"] += 1
                     continue
-                _apply_batch_results(batch_idx, batch, batch_entries, results, host_list[0])
+                _apply_batch_results(batch_idx, batch, batch_entries, results, host_list[0].url)
 
         else:
             # ---- Multi-host: submit all batches concurrently ----------------
@@ -571,7 +703,7 @@ def translate_language(
                     zip(batches, all_batch_entries)
                 ):
                     client = clients[batch_idx % len(clients)]
-                    host_tag = host_list[batch_idx % len(host_list)]
+                    host_tag = host_list[batch_idx % len(host_list)].url
                     f = batch_executor.submit(
                         client.translate_batch, batch_entries, config.source_lang, lang
                     )
@@ -648,7 +780,7 @@ def main() -> int:
 
     # Assign hosts to languages (round-robin + manual overrides)
     host_assignment = _assign_hosts(target_langs, config)
-    unique_hosts = sorted({h for hosts in host_assignment.values() for h in hosts})
+    unique_hosts = sorted({h.url for hosts in host_assignment.values() for h in hosts})
 
     total_entries = sum(po_helper.count_entries(f) for f in source_files)
     if not config.source_file:
@@ -665,9 +797,9 @@ def main() -> int:
         for lang in target_langs:
             hosts = host_assignment[lang]
             if len(hosts) == 1:
-                print(f"[translate]   {lang} → {hosts[0]}")
+                print(f"[translate]   {lang} → {hosts[0].url}")
             else:
-                print(f"[translate]   {lang} → {', '.join(hosts)}  ({len(hosts)} hosts, batches distributed)")
+                print(f"[translate]   {lang} → {', '.join(h.url for h in hosts)}  ({len(hosts)} hosts, batches distributed)")
     cache_dir = po_helper._checkpoint_dir(config.folder, config.project)
     print(f"[translate] Cache: {cache_dir}")
 

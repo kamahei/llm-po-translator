@@ -1,10 +1,12 @@
 """
-llm_client.py — LLM API client wrapping Ollama's OpenAI-compatible endpoint.
+llm_client.py — LLM API client wrapping OpenAI-compatible endpoints.
 
 Supports:
-  - Local Ollama  (http://localhost:11434)
-  - LAN Ollama    (http://<ip>:11434)
-  - External via Cloudflare Tunnel (https://<domain> + CF-Access headers)
+  - Local Ollama     (http://localhost:11434, no auth)
+  - LAN Ollama       (http://<ip>:11434, no auth)
+  - External Ollama  (https://<domain>, Cloudflare Tunnel + CF-Access headers)
+  - Local LM Studio  (http://localhost:1234, Bearer token)
+  - LAN LM Studio    (http://<ip>:1234, Bearer token)
 """
 from __future__ import annotations
 
@@ -45,20 +47,33 @@ reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
 
 
 class LLMClient:
-    """Sends translation requests to an Ollama (OpenAI-compatible) backend."""
+    """Sends translation requests to an OpenAI-compatible LLM backend (Ollama or LM Studio)."""
 
     def __init__(self, config: Config) -> None:
         self._model = config.model
         self._timeout = config.timeout
 
         headers: dict[str, str] = {}
-        if config.api_key and config.api_secret:
-            headers["CF-Access-Client-Id"] = config.api_key
-            headers["CF-Access-Client-Secret"] = config.api_secret
+        auth_type = getattr(config, "auth_type", "none")
+
+        if auth_type == "cf":
+            # Ollama external server via Cloudflare Tunnel
+            if config.api_key and config.api_secret:
+                headers["CF-Access-Client-Id"] = config.api_key
+                headers["CF-Access-Client-Secret"] = config.api_secret
+            openai_api_key = "ollama"
+        elif auth_type == "bearer":
+            # LM Studio (or any Bearer-token-authenticated OpenAI-compatible server)
+            # The openai library sends "Authorization: Bearer <api_key>" automatically.
+            openai_api_key = config.api_key or "lm-studio"
+        else:
+            # Ollama local/LAN — no authentication required
+            # The openai library still requires a non-empty api_key value.
+            openai_api_key = "ollama"
 
         self._client = openai.OpenAI(
             base_url=f"{config.host.rstrip('/')}/v1",
-            api_key="ollama",  # Ollama ignores the key but the library requires one
+            api_key=openai_api_key,
             default_headers=headers if headers else None,
             timeout=config.timeout,
         )

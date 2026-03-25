@@ -1,6 +1,6 @@
-# install-local.ps1
+# install-ollama-local.ps1
 # Sets up Ollama and Python dependencies for local use of POTranslatorLLM.
-# Run from the repository root:  .\setup\install-local.ps1
+# Run from the repository root:  .\setup\install-ollama-local.ps1
 
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"

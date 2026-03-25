@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-POTranslatorLLM is a standalone command-line tool that translates gettext `.po` files using a locally running Large Language Model (LLM) via [Ollama](https://ollama.com). It does not require GitHub Copilot, cloud API keys, or an internet connection (unless using a remote shared server).
+POTranslatorLLM is a standalone command-line tool that translates gettext `.po` files using a locally running Large Language Model (LLM) via [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai). It does not require GitHub Copilot, cloud API keys, or an internet connection (unless using a remote shared server).
 
 The tool is designed for game localization workflows where the source language can be any language and target languages may include English, Japanese, Chinese, French, Korean, and many others.
 
@@ -13,6 +13,8 @@ The tool is designed for game localization workflows where the source language c
 - Translate `.po` files from a source language to one or more target languages using a local LLM.
 - Run entirely on Windows without WSL or Docker.
 - Support both a personal local install and a shared team LLM server.
+- Support both Ollama and LM Studio as interchangeable backends.
+- Allow Ollama and LM Studio hosts to be mixed in multi-host mode.
 - Resume interrupted translations from a checkpoint without restarting.
 - Produce output identical in structure to the input `.po` files, preserving all metadata, comments, and untouched translations.
 
@@ -43,9 +45,10 @@ The tool is designed for game localization workflows where the source language c
       │ - Compare      │   │   REST client  │
       │ - Detect       │   │ - Batch send   │
       │   untranslated │   │ - Retry logic  │
-      │ - Write .po    │   │ - CF-Access    │
-      │ - Checkpoint   │   │   header inject│
-      └────────────────┘   └───────┬────────┘
+      │ - Write .po    │   │ - Auth:        │
+      │ - Checkpoint   │   │   none / CF /  │
+      └────────────────┘   │   Bearer token │
+                           └───────┬────────┘
                                    │
                     ┌──────────────▼──────────────┐
                     │       LLM Backend            │
@@ -53,12 +56,19 @@ The tool is designed for game localization workflows where the source language c
                     │  Option A: Local Ollama      │
                     │  http://localhost:11434       │
                     │                              │
-                    │  Option B: Shared Server     │
+                    │  Option B: Shared Ollama     │
                     │  http://<lan-ip>:11434        │
                     │                              │
                     │  Option C: External via CF   │
                     │  https://llm.example.com     │
                     │  + CF-Access-Client headers  │
+                    │                              │
+                    │  Option D: Local LM Studio   │
+                    │  http://localhost:1234        │
+                    │                              │
+                    │  Option E: Shared LM Studio  │
+                    │  http://<lan-ip>:1234         │
+                    │  + Bearer token (optional)   │
                     └──────────────────────────────┘
 ```
 
@@ -88,8 +98,12 @@ The tool is designed for game localization workflows where the source language c
 
 ### 5.3 `llm_client.py` — LLM API Client
 
-- Wraps the Ollama REST API using the `openai` Python library.
-- Supports three connection modes: local, LAN (no auth), external (CF-Access headers).
+- Wraps the OpenAI-compatible REST API using the `openai` Python library.
+- Supports five connection modes: local Ollama, LAN Ollama, external Ollama (CF-Access headers), local LM Studio (Bearer token), LAN LM Studio (Bearer token).
+- Authentication is selected by `auth_type` on the `HostEntry` / `Config`:
+  - `"none"` — no auth (Ollama local/LAN)
+  - `"cf"` — Cloudflare Access headers (Ollama external)
+  - `"bearer"` — `Authorization: Bearer <token>` (LM Studio)
 - Sends batch translation requests with a structured system prompt.
 - Parses JSON responses from the LLM.
 - Retries on transient errors (network, timeout, malformed JSON).
@@ -153,10 +167,12 @@ POTranslatorLLM/
 ├── scripts/
 │   ├── translate.py                 # Main CLI translation script
 │   ├── po_helper.py                 # PO file parsing, comparison, merge
-│   └── llm_client.py                # LLM API client
+│   └── llm_client.py                # LLM API client (Ollama + LM Studio)
 ├── setup/
-│   ├── install-local.ps1            # Windows: install Ollama locally
-│   ├── install-server.ps1           # Windows: install shared server + cloudflared
+│   ├── install-ollama-local.ps1     # Windows: install Ollama locally
+│   ├── install-ollama-server.ps1    # Windows: install shared Ollama server + cloudflared
+│   ├── install-lmstudio-local.ps1   # Windows: set up LM Studio locally
+│   ├── install-lmstudio-server.ps1  # Windows: set up shared LM Studio server
 │   └── requirements.txt             # Python dependencies
 ├── config/
 │   └── config.example.env           # Example configuration with comments
@@ -215,7 +231,7 @@ The file is overwritten atomically after each batch (write to `.tmp` then rename
 
 ## 9. Connection Modes
 
-### 9.1 Local Mode (default)
+### 9.1 Local Ollama Mode (default)
 
 Ollama runs on the same machine as `translate.py`.
 
@@ -228,7 +244,7 @@ No authentication required. Configure via:
 OLLAMA_HOST=http://localhost:11434
 ```
 
-### 9.2 LAN Mode
+### 9.2 LAN Ollama Mode
 
 Ollama runs on a shared server on the local network.
 
@@ -241,7 +257,7 @@ No authentication required (LAN is trusted). Configure via:
 OLLAMA_HOST=http://192.168.1.100:11434
 ```
 
-### 9.3 External Mode (Cloudflare Tunnel)
+### 9.3 External Ollama Mode (Cloudflare Tunnel)
 
 Ollama is exposed externally through a Cloudflare Tunnel protected by Access Service Auth.
 
@@ -259,6 +275,50 @@ OLLAMA_HOST=https://llm.example.com
 CF_ACCESS_CLIENT_ID=<id>
 CF_ACCESS_CLIENT_SECRET=<secret>
 ```
+
+### 9.4 Local LM Studio Mode
+
+LM Studio runs on the same machine as `translate.py`.
+
+```
+translate.py → http://localhost:1234/v1/chat/completions
+               Authorization: Bearer lm-studio
+```
+
+Configure via:
+```
+LMS_HOST=http://localhost:1234
+LMS_MODEL=qwen2.5-7b-instruct
+LMS_API_KEY=lm-studio
+```
+
+### 9.5 LAN LM Studio Mode
+
+LM Studio runs on a shared server on the local network, bound to all interfaces.
+
+```
+translate.py → http://192.168.1.100:1234/v1/chat/completions
+               Authorization: Bearer <key>
+```
+
+Configure via:
+```
+LMS_HOST=http://192.168.1.100:1234
+LMS_MODEL=qwen2.5-7b-instruct
+LMS_API_KEY=<api-key-if-auth-enabled>
+```
+
+### 9.6 Mixed Mode (Ollama + LM Studio)
+
+Ollama and LM Studio hosts can be combined in the same host pool. Each host carries its own `auth_type` and credentials via the `HostEntry` structure in `translate.py`.
+
+```
+OLLAMA_HOST=http://server1:11434
+LMS_HOST=http://server2:1234
+LMS_MODEL=qwen2.5-7b-instruct
+```
+
+In multi-host mode, languages or batches are distributed across all hosts regardless of backend type.
 
 ---
 
@@ -298,9 +358,11 @@ CF_ACCESS_CLIENT_SECRET=<secret>
 
 | Access Path | Authentication | Notes |
 |---|---|---|
-| `localhost:11434` | None | Local use only |
-| LAN `<ip>:11434` | None | Trust LAN; restrict via firewall if needed |
-| Cloudflare Tunnel | CF Service Auth tokens | Per-user tokens; revocable |
+| `localhost:11434` (Ollama) | None | Local use only |
+| LAN `<ip>:11434` (Ollama) | None | Trust LAN; restrict via firewall if needed |
+| Cloudflare Tunnel (Ollama) | CF Service Auth tokens | Per-user tokens; revocable |
+| `localhost:1234` (LM Studio) | None or Bearer token | Bearer token required only when LM Studio auth is enabled |
+| LAN `<ip>:1234` (LM Studio) | None or Bearer token | Bearer token required only when LM Studio auth is enabled |
 | Open WebUI (LAN) | None | Admin access only; not exposed externally |
 
 Service tokens are issued per user/team by the server administrator. Compromised tokens can be revoked instantly from the Cloudflare Zero Trust dashboard without affecting other users.
