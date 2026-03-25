@@ -37,7 +37,8 @@ Rules:
 token form, but place them where the target language's natural word order requires. \
 A placeholder represents a runtime value (a number, a name, etc.) — treat it as if \
 it were an actual value when deciding word order. \
-Example: {{Day}}日目 (Japanese for "Day X") → "Day {{Day}}" in English, not "{{Day}} day".
+Example: {{0}}日目 (Japanese for "Day X", where {{0}} is a number) → "Day {{0}}" \
+in English, not "{{0}} day".
 - Preserve markup inside <...> tags (treat as engine commands, not text to translate).
 - Ruby markup from the source is pre-flattened to its visible text before it \
 reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
