@@ -43,7 +43,7 @@ Supported LLM backends: **Ollama** and **LM Studio** (or both simultaneously in 
 ## 2. Prerequisites
 
 - Windows 10 or Windows 11 (64-bit)
-- Python 3.9 or later — download from https://www.python.org/downloads/
+- Python 3.9 or later — the setup script installs this automatically if missing
 - Git (optional, for cloning the repository)
 
 For **local mode** only:
@@ -60,14 +60,24 @@ For **LAN or external mode** only:
 
 ### Step 1: Set Up Ollama
 
-Open **PowerShell** and run the setup script:
+**Easiest on Windows:** double-click `Start-Windows-Ollama-Setup.cmd` in the repository root.
+
+If Windows Smart App Control blocks it, unblock the files first:
+
+```powershell
+Unblock-File .\Start-Windows-Ollama-Setup.cmd
+Unblock-File .\setup\install-ollama-local.ps1
+.\Start-Windows-Ollama-Setup.cmd
+```
+
+Or run the setup script directly from PowerShell:
 
 ```powershell
 cd POTranslatorLLM
 .\setup\install-ollama-local.ps1
 ```
 
-This script installs Ollama, downloads the `qwen2.5:7b` model, and installs the required Python packages. It takes a few minutes depending on your internet connection.
+This script installs Ollama, downloads the `qwen2.5:7b` model, installs the latest stable Python automatically when needed, enables Windows long paths, and installs the required Python packages.
 
 You can verify Ollama is running:
 ```powershell
@@ -76,15 +86,7 @@ ollama list
 
 You should see `qwen2.5:7b` in the list.
 
-### Step 2: Install Python Dependencies (if not done by setup script)
-
-```powershell
-python -m pip install -r setup\requirements.txt
-```
-
-> **`python` not recognized?** Python is not installed or was installed without adding it to PATH. Download from https://www.python.org/downloads/ and check **"Add Python to PATH"** during installation, then reopen PowerShell and try again.
-
-### Step 3: Run Translation
+### Step 2: Run Translation
 
 ```powershell
 python scripts/translate.py --folder Localization/Game --source-lang ja
@@ -120,7 +122,7 @@ cd POTranslatorLLM
 .\setup\install-lmstudio-local.ps1
 ```
 
-This installs Python dependencies and sets up `.env` with the LM Studio configuration.
+This installs the latest stable Python automatically when needed, enables Windows long paths, installs Python dependencies, and sets up `.env` with the LM Studio configuration.
 
 ### Step 3: Configure `.env`
 
@@ -162,6 +164,14 @@ For **external access** (Cloudflare Tunnel), ask your administrator for:
 - Your personal `CF_ACCESS_CLIENT_SECRET`
 
 ### Step 2: Install Python Dependencies
+
+Run the local setup script to install Python automatically and set up dependencies:
+
+```powershell
+.\setup\install-ollama-local.ps1
+```
+
+Or, if Python is already installed:
 
 ```powershell
 python -m pip install -r setup\requirements.txt
@@ -767,7 +777,15 @@ When running `.\setup\install-ollama-local.ps1` you may see:
 .\setup\install-ollama-local.ps1 : File ... is not digitally signed. You cannot run this script on the current system.
 ```
 
-This is a Windows PowerShell security policy restriction. To allow the script to run, execute the following command **once** in an elevated PowerShell session (Run as Administrator):
+This is a Windows PowerShell security policy restriction. The easiest fix is to unblock the files and use the launcher:
+
+```powershell
+Unblock-File .\Start-Windows-Ollama-Setup.cmd
+Unblock-File .\setup\install-ollama-local.ps1
+.\Start-Windows-Ollama-Setup.cmd
+```
+
+Alternatively, allow the script to run by executing the following command **once** in an elevated PowerShell session (Run as Administrator):
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
@@ -780,12 +798,6 @@ Then re-run the setup script:
 ```
 
 > **What this does:** `RemoteSigned` allows locally-created scripts to run without a digital signature, while still requiring scripts downloaded from the internet to be signed. This is the recommended policy for developer machines.
->
-> If you prefer not to change your global policy, you can unblock only this script for the current session:
-> ```powershell
-> Unblock-File .\setup\install-ollama-local.ps1
-> .\setup\install-ollama-local.ps1
-> ```
 
 ### "Connection refused" or "Failed to connect" (Ollama)
 

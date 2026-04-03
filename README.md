@@ -21,37 +21,33 @@ A standalone command-line tool for translating gettext `.po` localization files 
 
 ### Option A — Ollama (Local Mode)
 
+For the easiest Windows Ollama local setup, double-click `Start-Windows-Ollama-Setup.cmd`.
+
+If Windows Smart App Control blocks the launcher because the folder was downloaded from the web, unblock the files and run the launcher from PowerShell:
+
 ```powershell
-cd POTranslatorLLM
-.\setup\install-ollama-local.ps1
+Unblock-File .\Start-Windows-Ollama-Setup.cmd
+Unblock-File .\setup\install-ollama-local.ps1
+.\Start-Windows-Ollama-Setup.cmd
 ```
 
-This installs Ollama, downloads the `qwen2.5:7b` model, and installs Python dependencies.
+If you prefer to skip the launcher entirely:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\setup\install-ollama-local.ps1
+```
+
+The setup installs Ollama if needed, pulls the default `qwen2.5:7b` model, installs the latest stable Python automatically when needed, enables Windows long paths, installs Python dependencies, and creates `.env` from `config\config.example.env`.
 
 ### Option B — LM Studio (Local Mode)
 
 ```powershell
-cd POTranslatorLLM
 .\setup\install-lmstudio-local.ps1
 ```
 
 This installs Python dependencies and configures `.env` for LM Studio. You must install LM Studio separately from https://lmstudio.ai/ and start its local server (Developer tab → Start Server).
 
-> **PowerShell execution policy error?** If you see *"The file is not digitally signed"*, run this once in an elevated PowerShell session (Run as Administrator), then re-run the script:
-> ```powershell
-> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-> ```
-> See [Troubleshooting](docs/user-manual.md#file-cannot-be-loaded-the-file-is-not-digitally-signed-powershell-execution-policy-error) in the user manual for details.
-
-### 2. Install Python Dependencies
-
-```powershell
-python -m pip install -r setup\requirements.txt
-```
-
-> **`python` not recognized?** Python is not installed or was installed without adding it to PATH. Download from https://www.python.org/downloads/ and check **"Add Python to PATH"** during installation, then reopen PowerShell and try again.
-
-### 3. Run Translation
+### Run Translation
 
 ```powershell
 # Translate all sibling languages
@@ -70,24 +66,28 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 
 ```
 POTranslatorLLM/
-├── README.md                    # This file
+├── README.md                        # This file
+├── Start-Windows-Ollama-Setup.cmd   # Windows double-click launcher for Ollama local setup
 ├── scripts/
-│   ├── translate.py             # Main CLI translation script
-│   ├── po_helper.py             # PO file parsing, comparison, and merge
-│   └── llm_client.py            # Ollama/LM Studio OpenAI-compatible LLM client
+│   ├── translate.py                 # Main CLI translation script
+│   ├── po_helper.py                 # PO file parsing, comparison, and merge
+│   └── llm_client.py               # Ollama/LM Studio OpenAI-compatible LLM client
 ├── setup/
-│   ├── install-ollama-local.ps1  # Windows: set up local Ollama
-│   ├── install-ollama-server.ps1 # Windows: set up shared Ollama server + cloudflared
+│   ├── common-python.ps1            # Shared Python bootstrap helpers
+│   ├── install-ollama-local.ps1     # Windows: set up local Ollama
+│   ├── install-ollama-server.ps1    # Windows: set up shared Ollama server + cloudflared
 │   ├── install-lmstudio-local.ps1   # Windows: set up local LM Studio
 │   ├── install-lmstudio-server.ps1  # Windows: set up shared LM Studio server
-│   └── requirements.txt         # Python dependencies
+│   └── requirements.txt             # Python dependencies
 ├── config/
-│   └── config.example.env       # Example .env configuration
+│   └── config.example.env           # Example .env configuration
 └── docs/
-    ├── design.md                # System architecture and design
-    ├── user-manual.md           # End-user guide
-    ├── admin-guide.md           # Shared server admin guide
-    └── cloudflare-setup.md      # Cloudflare Tunnel setup procedure
+    ├── windows-ollama-easy-setup-ja.md  # Windows かんたんセットアップ (Japanese)
+    ├── windows-ollama-easy-setup-en.md  # Windows easy setup guide (English)
+    ├── design.md                    # System architecture and design
+    ├── user-manual.md               # End-user guide
+    ├── admin-guide.md               # Shared server admin guide
+    └── cloudflare-setup.md          # Cloudflare Tunnel setup procedure
 ```
 
 ---
@@ -274,6 +274,8 @@ See [User Manual — Section 6](docs/user-manual.md#6-multi-host-parallel-transl
 
 | Document | Description |
 |---|---|
+| [Windows Easy Setup (JA)](docs/windows-ollama-easy-setup-ja.md) | Windows かんたんセットアップ (Ollama ローカル) |
+| [Windows Easy Setup (EN)](docs/windows-ollama-easy-setup-en.md) | Windows easy setup guide (Ollama local) |
 | [User Manual](docs/user-manual.md) | How to install, configure, and run translations (local and remote) |
 | [Admin Guide](docs/admin-guide.md) | How to set up and manage the shared Ollama server |
 | [Cloudflare Setup](docs/cloudflare-setup.md) | Step-by-step manual for Cloudflare Tunnel + Service Auth |
