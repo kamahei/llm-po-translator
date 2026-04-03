@@ -5,6 +5,8 @@
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "common-python.ps1")
+
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "  POTranslatorLLM -- LM Studio Local Setup" -ForegroundColor Cyan
@@ -53,10 +55,8 @@ if (-not $lmsInstalled) {
 # ---------------------------------------------------------------------------
 Write-Host "[2/4] Checking LM Studio server (http://localhost:1234)..." -ForegroundColor Yellow
 
-$lmsRunning = $false
 try {
     $null = Invoke-RestMethod -Uri "http://localhost:1234/v1/models" -Method Get -TimeoutSec 5
-    $lmsRunning = $true
     Write-Host "      LM Studio server is running." -ForegroundColor Green
 } catch {
     Write-Host "      LM Studio server is not running." -ForegroundColor Yellow
@@ -67,34 +67,16 @@ try {
 # ---------------------------------------------------------------------------
 # 3. Check Python and install dependencies
 # ---------------------------------------------------------------------------
-Write-Host "[3/4] Checking Python and installing dependencies..." -ForegroundColor Yellow
+Write-Host "[3/4] Checking Python, enabling long paths, and installing dependencies..." -ForegroundColor Yellow
 
-$pythonCmd = $null
-foreach ($cmd in @("python", "python3", "py")) {
-    try {
-        $ver = & $cmd --version 2>&1
-        if ($ver -match "Python 3\.(9|1[0-9])") {
-            $pythonCmd = $cmd
-            break
-        }
-    } catch { }
-}
-
-if ($null -eq $pythonCmd) {
-    Write-Host "ERROR: Python 3.9+ is required but not found." -ForegroundColor Red
-    Write-Host "       Download from https://www.python.org/downloads/" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "      Using Python: $(& $pythonCmd --version)"
-
-$requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
 try {
-    & $pythonCmd -m pip install -r $requirementsPath --quiet
+    $pythonExe = Ensure-PythonReady
+    $requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
+    Install-PythonRequirements -PythonExecutablePath $pythonExe -RequirementsPath $requirementsPath
     Write-Host "      Python dependencies installed." -ForegroundColor Green
 } catch {
-    Write-Host "ERROR: Failed to install Python dependencies." -ForegroundColor Red
-    Write-Host "       Run manually: pip install -r setup\requirements.txt" -ForegroundColor Red
+    Write-Host "ERROR: Failed to prepare Python automatically." -ForegroundColor Red
+    Write-Host "       $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
 

@@ -5,6 +5,8 @@
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "common-python.ps1")
+
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "  POTranslatorLLM -- Local Setup" -ForegroundColor Cyan
@@ -120,34 +122,16 @@ try {
 # ---------------------------------------------------------------------------
 # 4. Check Python and install dependencies
 # ---------------------------------------------------------------------------
-Write-Host "[4/5] Checking Python and installing dependencies..." -ForegroundColor Yellow
+Write-Host "[4/5] Checking Python, enabling long paths, and installing dependencies..." -ForegroundColor Yellow
 
-$pythonCmd = $null
-foreach ($cmd in @("python", "python3", "py")) {
-    try {
-        $ver = & $cmd --version 2>&1
-        if ($ver -match "Python 3\.(9|1[0-9])") {
-            $pythonCmd = $cmd
-            break
-        }
-    } catch { }
-}
-
-if ($null -eq $pythonCmd) {
-    Write-Host "ERROR: Python 3.9+ is required but not found." -ForegroundColor Red
-    Write-Host "       Download from https://www.python.org/downloads/" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "      Using Python: $(& $pythonCmd --version)"
-
-$requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
 try {
-    & $pythonCmd -m pip install -r $requirementsPath --quiet
+    $pythonExe = Ensure-PythonReady
+    $requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
+    Install-PythonRequirements -PythonExecutablePath $pythonExe -RequirementsPath $requirementsPath
     Write-Host "      Python dependencies installed." -ForegroundColor Green
 } catch {
-    Write-Host "ERROR: Failed to install Python dependencies." -ForegroundColor Red
-    Write-Host "       Run manually: pip install -r setup\requirements.txt" -ForegroundColor Red
+    Write-Host "ERROR: Failed to prepare Python automatically." -ForegroundColor Red
+    Write-Host "       $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
 
@@ -164,12 +148,14 @@ if (-not (Test-Path $envPath)) {
     if (Test-Path $examplePath) {
         Copy-Item $examplePath $envPath
         Write-Host "      Created .env from config.example.env" -ForegroundColor Green
-        Write-Host "      Edit .env to customize settings (model, server URL, etc.)" -ForegroundColor Cyan
+        Write-Host "      You can leave .env as-is for the default local one-model setup." -ForegroundColor Cyan
+        Write-Host "      Edit .env only if you want to change the model or server settings." -ForegroundColor Cyan
     } else {
         Write-Host "      config.example.env not found -- skipping .env creation." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "      .env already exists -- skipping." -ForegroundColor Green
+    Write-Host "      .env already exists -- keeping current settings." -ForegroundColor Green
+    Write-Host "      Delete .env and re-run setup if you want the default example settings." -ForegroundColor Cyan
 }
 
 # ---------------------------------------------------------------------------
@@ -181,7 +167,9 @@ Write-Host "  Setup complete!" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor White
-Write-Host "  1. Edit .env if you want to change the model or server settings." -ForegroundColor White
-Write-Host "  2. Run a translation:" -ForegroundColor White
+Write-Host "  1. You can leave .env as-is for one local Ollama model." -ForegroundColor White
+Write-Host "  2. Run a dry-run:" -ForegroundColor White
+Write-Host "       python scripts\translate.py --folder Localization/Game --source-lang ja --target-lang en --dry-run" -ForegroundColor Cyan
+Write-Host "  3. Run a translation:" -ForegroundColor White
 Write-Host "       python scripts\translate.py --folder Localization/Game --source-lang ja --target-lang en" -ForegroundColor Cyan
 Write-Host ""

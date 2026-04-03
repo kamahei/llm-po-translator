@@ -5,6 +5,8 @@
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "common-python.ps1")
+
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "  POTranslatorLLM -- Shared Server Setup" -ForegroundColor Cyan
@@ -163,26 +165,17 @@ Write-Host "      Firewall rule '$ruleName' created (Private profile only)." -Fo
 # ---------------------------------------------------------------------------
 # 6. Check Python and install dependencies
 # ---------------------------------------------------------------------------
-Write-Host "[6/7] Checking Python and installing dependencies..." -ForegroundColor Yellow
+Write-Host "[6/7] Checking Python, enabling long paths, and installing dependencies..." -ForegroundColor Yellow
 
-$pythonCmd = $null
-foreach ($cmd in @("python", "python3", "py")) {
-    try {
-        $ver = & $cmd --version 2>&1
-        if ($ver -match "Python 3\.(9|1[0-9])") {
-            $pythonCmd = $cmd
-            break
-        }
-    } catch { }
-}
-
-if ($null -eq $pythonCmd) {
-    Write-Host "WARNING: Python 3.9+ not found. Install from https://www.python.org/downloads/" -ForegroundColor Yellow
-    Write-Host "         Then run: pip install -r setup\requirements.txt" -ForegroundColor Yellow
-} else {
+try {
+    $pythonExe = Ensure-PythonReady
     $requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
-    & $pythonCmd -m pip install -r $requirementsPath --quiet
+    Install-PythonRequirements -PythonExecutablePath $pythonExe -RequirementsPath $requirementsPath
     Write-Host "      Python dependencies installed." -ForegroundColor Green
+} catch {
+    Write-Host "WARNING: Failed to prepare Python automatically." -ForegroundColor Yellow
+    Write-Host "         $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "         Re-run this script after fixing Python if you need the local CLI on this server." -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
