@@ -44,6 +44,7 @@ class HostEntry:
     api_secret: str = ""    # CF-Access-Client-Secret (cf only)
     auth_type: str = "none" # "none" | "cf" | "bearer"
     model: str = ""         # empty = inherit Config.model
+    backend: str = "ollama"
 
 
 @dataclass
@@ -56,6 +57,7 @@ class Config:
     api_key: str = ""
     api_secret: str = ""
     auth_type: str = "none"
+    backend: str = "ollama"
     batch_size: int = 20
     timeout: float = 120.0
     reset: bool = False
@@ -70,6 +72,7 @@ class Config:
     # Per-language model overrides
     ollama_lang_models: dict[str, str] = field(default_factory=dict)  # {lang: ollama_model}
     lms_lang_models: dict[str, str] = field(default_factory=dict)     # {lang: lms_model}
+    vllm_lang_models: dict[str, str] = field(default_factory=dict)    # {lang: vllm_model}
     # File mode fields
     source_file: str = ""
     old_source_file: str = ""
@@ -101,7 +104,7 @@ def parse_args() -> Config:
     parser = argparse.ArgumentParser(
         prog="translate.py",
         description=(
-            "Translate .po files using a local LLM (Ollama or LM Studio).\n\n"
+            "Translate .po files using a local or shared LLM (Ollama, LM Studio, or vLLM).\n\n"
             "Folder mode:  --folder <path> --source-lang <code> [--target-lang ...]\n"
             "File mode:    --source-file <current.po> --old-source-file <old.po> --target-lang ..."
         ),
@@ -254,6 +257,59 @@ def parse_args() -> Config:
             "Env: LMS_API_KEY (default: lm-studio)."
         ),
     )
+    vllm_group = parser.add_argument_group("vLLM backend (existing server connection)")
+    vllm_group.add_argument(
+        "--vllm-host",
+        default=_env("VLLM_HOST", ""),
+        help="vLLM server base URL (e.g. http://server:8000). Env: VLLM_HOST.",
+    )
+    vllm_group.add_argument(
+        "--vllm-hosts",
+        nargs="+",
+        default=[],
+        metavar="URL",
+        help=(
+            "Multiple vLLM server URLs for parallel translation. "
+            "Overrides --vllm-host. Env: VLLM_HOSTS (comma-separated)."
+        ),
+    )
+    vllm_group.add_argument(
+        "--vllm-lang-host",
+        action="append",
+        default=[],
+        metavar="LANG=URL",
+        help=(
+            "Assign a vLLM host to a specific language (e.g. en=http://host:8000). "
+            "Repeat the same LANG to assign multiple hosts. "
+            "Env: VLLM_LANG_HOSTS (comma-separated LANG=URL pairs)."
+        ),
+    )
+    vllm_group.add_argument(
+        "--vllm-model",
+        default=_env("VLLM_MODEL", ""),
+        help="vLLM model name. Env: VLLM_MODEL.",
+    )
+    vllm_group.add_argument(
+        "--vllm-lang-model",
+        action="append",
+        default=[],
+        metavar="LANG=MODEL",
+        help=(
+            "Use a specific vLLM model for a target language (e.g. en=meta-llama/Llama-3.1-8B-Instruct). "
+            "Repeat for multiple languages. "
+            "Hosts that do not have the required model are skipped automatically. "
+            "Env: VLLM_LANG_MODELS (comma-separated LANG=MODEL pairs)."
+        ),
+    )
+    vllm_group.add_argument(
+        "--vllm-api-key",
+        default=_env("VLLM_API_KEY", "vllm"),
+        help=(
+            "vLLM API key for Bearer token authentication. "
+            "Use any non-empty string when the server does not enforce auth. "
+            "Env: VLLM_API_KEY (default: vllm)."
+        ),
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -351,6 +407,7 @@ def parse_args() -> Config:
             api_secret=ollama_api_secret,
             auth_type=ollama_auth_type,
             model=ollama_model,
+            backend="ollama",
         )
 
     lms_api_key = args.lms_api_key or "lm-studio"
@@ -363,6 +420,20 @@ def parse_args() -> Config:
             api_secret="",
             auth_type="bearer",
             model=lms_model,
+            backend="lmstudio",
+        )
+
+    vllm_api_key = args.vllm_api_key or "vllm"
+    vllm_model = args.vllm_model
+
+    def _vllm_entry(url: str) -> HostEntry:
+        return HostEntry(
+            url=url,
+            api_key=vllm_api_key,
+            api_secret="",
+            auth_type="bearer",
+            model=vllm_model,
+            backend="vllm",
         )
 
     # --- Resolve Ollama host pool -----------------------------------------
@@ -385,10 +456,21 @@ def parse_args() -> Config:
     elif args.lms_host:
         lms_urls = [h.strip() for h in args.lms_host.split(",") if h.strip()]
 
+    # --- Resolve vLLM host pool -------------------------------------------
+    # Priority: --vllm-hosts CLI > VLLM_HOSTS env > --vllm-host CLI > VLLM_HOST env
+    vllm_urls: list[str] = []
+    if args.vllm_hosts:
+        vllm_urls = args.vllm_hosts
+    elif env_vllm_hosts := _env("VLLM_HOSTS"):
+        vllm_urls = [h.strip() for h in env_vllm_hosts.split(",") if h.strip()]
+    elif args.vllm_host:
+        vllm_urls = [h.strip() for h in args.vllm_host.split(",") if h.strip()]
+
     # --- Merge host pools -------------------------------------------------
     hosts: list[HostEntry] = (
         [_ollama_entry(u) for u in ollama_urls]
         + [_lms_entry(u) for u in lms_urls]
+        + [_vllm_entry(u) for u in vllm_urls]
     )
     if not hosts:
         hosts = [_ollama_entry("http://localhost:11434")]
@@ -436,6 +518,25 @@ def parse_args() -> Config:
                 elif host_url.strip() not in [e.url for e in lang_hosts.get(lang_key, [])]:
                     lang_hosts[lang_key].append(entry)
 
+    # --- Resolve language-to-host overrides (vLLM) ------------------------
+    for item in (args.vllm_lang_host or []):
+        if "=" in item:
+            lang, host_url = item.split("=", 1)
+            lang_hosts.setdefault(lang.strip(), []).append(_vllm_entry(host_url.strip()))
+        else:
+            parser.error(f"--vllm-lang-host must be in LANG=URL format, got: {item!r}")
+    if env_vllm_lang_hosts := _env("VLLM_LANG_HOSTS"):
+        for item in env_vllm_lang_hosts.split(","):
+            item = item.strip()
+            if "=" in item:
+                lang, host_url = item.split("=", 1)
+                lang_key = lang.strip()
+                entry = _vllm_entry(host_url.strip())
+                if lang_key not in lang_hosts:
+                    lang_hosts.setdefault(lang_key, []).append(entry)
+                elif host_url.strip() not in [e.url for e in lang_hosts.get(lang_key, [])]:
+                    lang_hosts[lang_key].append(entry)
+
     # --- Resolve per-language model overrides (Ollama) --------------------
     # Priority: --lang-model CLI > OLLAMA_LANG_MODELS env
     ollama_lang_models: dict[str, str] = {}
@@ -472,16 +573,35 @@ def parse_args() -> Config:
                 if lang_key not in lms_lang_models:
                     lms_lang_models[lang_key] = model.strip()
 
+    # --- Resolve per-language model overrides (vLLM) ----------------------
+    # Priority: --vllm-lang-model CLI > VLLM_LANG_MODELS env
+    vllm_lang_models: dict[str, str] = {}
+    for item in (args.vllm_lang_model or []):
+        if "=" in item:
+            lang, model = item.split("=", 1)
+            vllm_lang_models[lang.strip()] = model.strip()
+        else:
+            parser.error(f"--vllm-lang-model must be in LANG=MODEL format, got: {item!r}")
+    if env_vllm_lang_models := _env("VLLM_LANG_MODELS"):
+        for item in env_vllm_lang_models.split(","):
+            item = item.strip()
+            if "=" in item:
+                lang, model = item.split("=", 1)
+                lang_key = lang.strip()
+                if lang_key not in vllm_lang_models:
+                    vllm_lang_models[lang_key] = model.strip()
+
     first_host = hosts[0]
     return Config(
         folder=args.folder,
         source_lang=args.source_lang,
         target_langs=args.target_lang,
         host=first_host.url,
-        model=first_host.model or args.model,
+        model=first_host.model or "",
         api_key=first_host.api_key,
         api_secret=first_host.api_secret,
         auth_type=first_host.auth_type,
+        backend=first_host.backend,
         batch_size=max(1, args.batch_size),
         timeout=max(10.0, args.timeout),
         reset=args.reset,
@@ -494,6 +614,7 @@ def parse_args() -> Config:
         lang_hosts=lang_hosts,
         ollama_lang_models=ollama_lang_models,
         lms_lang_models=lms_lang_models,
+        vllm_lang_models=vllm_lang_models,
         source_file=args.source_file,
         old_source_file=args.old_source_file,
     )
@@ -554,8 +675,8 @@ def _probe_host(entry: HostEntry, timeout: float = 10.0) -> tuple[bool, list[str
     """
     Probe a host for connectivity and return its full list of available model IDs.
 
-    Uses the OpenAI-compatible ``GET /v1/models`` endpoint (Ollama ≥ 0.1.24
-    and LM Studio both support this).
+    Uses the OpenAI-compatible ``GET /v1/models`` endpoint (Ollama, LM Studio,
+    and vLLM support this).
 
     Returns ``(True, [model_ids], message)`` on success.
     Returns ``(False, [], reason)`` on connection failure.
@@ -567,7 +688,7 @@ def _probe_host(entry: HostEntry, timeout: float = 10.0) -> tuple[bool, list[str
             headers["CF-Access-Client-Secret"] = entry.api_secret
         api_key = "ollama"
     elif entry.auth_type == "bearer":
-        api_key = entry.api_key or "lm-studio"
+        api_key = entry.api_key or ("vllm" if entry.backend == "vllm" else "lm-studio")
     else:
         api_key = "ollama"
 
@@ -594,11 +715,13 @@ def _probe_and_plan_host_assignment(
 
     For each language, a host qualifies when:
     - The host is reachable, AND
-    - The required model (from ``ollama_lang_models`` / ``lms_lang_models``, or
-      the host's default model) appears in the host's available model list.
+    - The required model (from ``ollama_lang_models`` / ``lms_lang_models`` /
+      ``vllm_lang_models``, or the host's default model) appears in the host's
+      available model list.
 
-    When ``OLLAMA_LANG_HOSTS`` / ``LMS_LANG_HOSTS`` pins specific hosts to a
-    language, those hosts are still validated in the same way.
+    When ``OLLAMA_LANG_HOSTS`` / ``LMS_LANG_HOSTS`` / ``VLLM_LANG_HOSTS`` pins
+    specific hosts to a language, those hosts are still validated in the same
+    way.
 
     Returns ``(processable_langs, {lang: [HostEntry_with_model_set]})``.
     """
@@ -641,10 +764,11 @@ def _probe_and_plan_host_assignment(
 
     def _required_model(e: HostEntry, lang: str) -> str:
         """Return the model that should be used for *lang* on host *e*."""
-        if e.auth_type == "bearer":  # LM Studio
+        if e.backend == "lmstudio":
             return config.lms_lang_models.get(lang, e.model)
-        else:  # Ollama
-            return config.ollama_lang_models.get(lang, e.model or config.model)
+        if e.backend == "vllm":
+            return config.vllm_lang_models.get(lang, e.model)
+        return config.ollama_lang_models.get(lang, e.model or config.model)
 
     assignment: dict[str, list[HostEntry]] = {}
     processable: list[str] = []
@@ -699,7 +823,8 @@ def translate_language(
             api_key=h.api_key,
             api_secret=h.api_secret,
             auth_type=h.auth_type,
-            model=h.model or config.model,
+            backend=h.backend,
+            model=h.model or "",
         ))
         for h in host_list
     ]

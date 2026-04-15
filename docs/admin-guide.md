@@ -1,6 +1,6 @@
 # Administrator Guide — POTranslatorLLM Shared Server
 
-This guide is for administrators who set up and manage the shared LLM server(s) used by the team for PO file translation. Both Ollama and LM Studio are supported as backends.
+This guide is for administrators who set up and manage the shared LLM server(s) used by the team for PO file translation. Ollama and LM Studio are covered directly here, and an existing vLLM server can also be used through the same OpenAI-compatible client path.
 
 ---
 
@@ -23,13 +23,13 @@ This guide is for administrators who set up and manage the shared LLM server(s) 
 
 ## 1. Overview
 
-The shared server runs [Ollama](https://ollama.com) and/or [LM Studio](https://lmstudio.ai) on a Windows PC. It accepts translation requests from team members either:
+The shared server runs [Ollama](https://ollama.com) and/or [LM Studio](https://lmstudio.ai) on a Windows PC, or you can point users at an already-running [vLLM](https://docs.vllm.ai/) server. It accepts translation requests from team members either:
 
-- **On the LAN**: directly via `http://<server-ip>:11434` (Ollama, no auth) or `http://<server-ip>:1234` (LM Studio, optional Bearer token)
+- **On the LAN**: directly via `http://<server-ip>:11434` (Ollama, no auth), `http://<server-ip>:1234` (LM Studio, optional Bearer token), or `http://<server-ip>:8000` (vLLM, optional Bearer token)
 - **Externally**: via a Cloudflare Tunnel at a secure domain (Ollama, requires Cloudflare Access Service Auth tokens)
 
 Your responsibilities as admin:
-- Install and maintain Ollama and/or LM Studio and models on the server
+- Install and maintain Ollama and/or LM Studio and models on the server, or provide the URL/model/auth details for an existing vLLM server
 - Keep the server running (auto-start service)
 - For Ollama external access: set up and maintain the Cloudflare Tunnel and issue/revoke per-user tokens
 - For LM Studio: configure the server address and optional API authentication

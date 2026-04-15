@@ -7,6 +7,7 @@ Supports:
   - External Ollama  (https://<domain>, Cloudflare Tunnel + CF-Access headers)
   - Local LM Studio  (http://localhost:1234, Bearer token)
   - LAN LM Studio    (http://<ip>:1234, Bearer token)
+  - Shared vLLM      (http://<server>:8000, optional Bearer token)
 """
 from __future__ import annotations
 
@@ -71,7 +72,7 @@ reaches you (for example, <ruby displaytext="X" rubytext="Y"/> becomes X).
 
 
 class LLMClient:
-    """Sends translation requests to an OpenAI-compatible LLM backend (Ollama or LM Studio)."""
+    """Sends translation requests to an OpenAI-compatible LLM backend."""
 
     def __init__(self, config: Config) -> None:
         self._model = config.model
@@ -87,9 +88,10 @@ class LLMClient:
                 headers["CF-Access-Client-Secret"] = config.api_secret
             openai_api_key = "ollama"
         elif auth_type == "bearer":
-            # LM Studio (or any Bearer-token-authenticated OpenAI-compatible server)
+            # LM Studio or vLLM (or any Bearer-token-authenticated OpenAI-compatible server)
             # The openai library sends "Authorization: Bearer <api_key>" automatically.
-            openai_api_key = config.api_key or "lm-studio"
+            backend = getattr(config, "backend", "")
+            openai_api_key = config.api_key or ("vllm" if backend == "vllm" else "lm-studio")
         else:
             # Ollama local/LAN — no authentication required
             # The openai library still requires a non-empty api_key value.

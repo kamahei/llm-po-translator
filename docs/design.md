@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-POTranslatorLLM is a standalone command-line tool that translates gettext `.po` files using a locally running Large Language Model (LLM) via [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai). It does not require GitHub Copilot, cloud API keys, or an internet connection (unless using a remote shared server).
+POTranslatorLLM is a standalone command-line tool that translates gettext `.po` files using a locally running or shared Large Language Model (LLM) via [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), or [vLLM](https://docs.vllm.ai/). It does not require GitHub Copilot, cloud API keys, or an internet connection (unless using a remote shared server).
 
 The tool is designed for game localization workflows where the source language can be any language and target languages may include English, Japanese, Chinese, French, Korean, and many others.
 
@@ -13,8 +13,8 @@ The tool is designed for game localization workflows where the source language c
 - Translate `.po` files from a source language to one or more target languages using a local LLM.
 - Run entirely on Windows without WSL or Docker.
 - Support both a personal local install and a shared team LLM server.
-- Support both Ollama and LM Studio as interchangeable backends.
-- Allow Ollama and LM Studio hosts to be mixed in multi-host mode.
+- Support Ollama, LM Studio, and vLLM as interchangeable OpenAI-compatible backends.
+- Allow Ollama, LM Studio, and vLLM hosts to be mixed in multi-host mode.
 - Resume interrupted translations from a checkpoint without restarting.
 - Produce output identical in structure to the input `.po` files, preserving all metadata, comments, and untouched translations.
 
@@ -69,6 +69,10 @@ The tool is designed for game localization workflows where the source language c
                     │  Option E: Shared LM Studio  │
                     │  http://<lan-ip>:1234         │
                     │  + Bearer token (optional)   │
+                    │                              │
+                    │  Option F: Shared vLLM       │
+                    │  http://<lan-ip>:8000         │
+                    │  + Bearer token (optional)   │
                     └──────────────────────────────┘
 ```
 
@@ -99,11 +103,11 @@ The tool is designed for game localization workflows where the source language c
 ### 5.3 `llm_client.py` — LLM API Client
 
 - Wraps the OpenAI-compatible REST API using the `openai` Python library.
-- Supports five connection modes: local Ollama, LAN Ollama, external Ollama (CF-Access headers), local LM Studio (Bearer token), LAN LM Studio (Bearer token).
+- Supports six connection modes: local Ollama, LAN Ollama, external Ollama (CF-Access headers), local LM Studio (Bearer token), LAN LM Studio (Bearer token), and shared vLLM (Bearer token optional).
 - Authentication is selected by `auth_type` on the `HostEntry` / `Config`:
   - `"none"` — no auth (Ollama local/LAN)
   - `"cf"` — Cloudflare Access headers (Ollama external)
-  - `"bearer"` — `Authorization: Bearer <token>` (LM Studio)
+  - `"bearer"` — `Authorization: Bearer <token>` (LM Studio or vLLM)
 - Sends batch translation requests with a structured system prompt.
 - Parses JSON responses from the LLM.
 - Retries on transient errors (network, timeout, malformed JSON).

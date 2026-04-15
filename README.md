@@ -1,15 +1,15 @@
 # POTranslatorLLM
 
-A standalone command-line tool for translating gettext `.po` localization files using a locally running Large Language Model (LLM) powered by [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai). No cloud API keys, no GitHub Copilot, no internet connection required.
+A standalone command-line tool for translating gettext `.po` localization files using a locally running or shared Large Language Model (LLM) powered by [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), or [vLLM](https://docs.vllm.ai/). No cloud API keys, no GitHub Copilot, and no internet connection required once your backend is reachable.
 
 ---
 
 ## Features
 
 - **100% local** — runs entirely on your Windows PC with no external API calls
-- **Ollama and LM Studio support** — use either backend, or mix them together in multi-host mode
+- **Ollama, LM Studio, and vLLM support** — use any backend, or mix them together in multi-host mode
 - **Shared server support** — connect to a team LAN server or a Cloudflare-tunneled server
-- **Multi-host parallel translation** — distribute languages (or even batches within one language) across multiple Ollama servers simultaneously
+- **Multi-host parallel translation** — distribute languages (or even batches within one language) across Ollama, LM Studio, and vLLM servers simultaneously
 - **Resumable** — saves progress after each batch; interrupted jobs continue from the checkpoint
 - **Smart diff** — preserves existing human translations; only re-translates what needs it
 - **PO-spec compliant** — handles `msgctxt`, plural forms, fuzzy flags, ruby markup, and placeholders
@@ -71,7 +71,7 @@ POTranslatorLLM/
 ├── scripts/
 │   ├── translate.py                 # Main CLI translation script
 │   ├── po_helper.py                 # PO file parsing, comparison, and merge
-│   └── llm_client.py               # Ollama/LM Studio OpenAI-compatible LLM client
+│   └── llm_client.py               # Ollama/LM Studio/vLLM OpenAI-compatible LLM client
 ├── setup/
 │   ├── common-python.ps1            # Shared Python bootstrap helpers
 │   ├── install-ollama-local.ps1     # Windows: set up local Ollama
@@ -109,9 +109,16 @@ POTranslatorLLM/
 | **Local** | `LMS_HOST=http://localhost:1234` | None (or Bearer token if enabled) |
 | **LAN** | `LMS_HOST=http://<server-ip>:1234` | None (or Bearer token if enabled) |
 
+### vLLM
+
+| Mode | Configuration | Auth |
+|---|---|---|
+| **Shared / LAN** | `VLLM_HOST=http://<server-ip>:8000` | None or Bearer token |
+| **External** | `VLLM_HOST=https://llm.example.com` | None or Bearer token |
+
 Copy `config/config.example.env` to `.env` and fill in your values.
 
-You can configure both backends simultaneously — Ollama and LM Studio hosts are pooled together for multi-host parallel translation.
+You can configure all three backends simultaneously — Ollama, LM Studio, and vLLM hosts are pooled together for multi-host parallel translation.
 
 ---
 
@@ -155,6 +162,26 @@ In LM Studio, the model name to use in `LMS_MODEL` is shown in the server log wh
 
 ```powershell
 curl http://localhost:1234/v1/models
+```
+
+---
+
+## vLLM Server Connection
+
+Connect to an already-running vLLM server by setting the server URL and model name in `.env`:
+
+```ini
+VLLM_HOST=http://192.168.1.100:8000
+VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_API_KEY=vllm
+```
+
+When the server enforces API key authentication, set `VLLM_API_KEY` to the real key. Otherwise any non-empty placeholder is acceptable because the OpenAI client requires one.
+
+To discover the model ID exposed by the server:
+
+```powershell
+curl http://192.168.1.100:8000/v1/models
 ```
 
 ---
@@ -212,7 +239,14 @@ python scripts/translate.py --source-file Localization/Game/ja/Game.po --old-sou
   --lms-hosts <url...>     Multiple LM Studio hosts for parallel translation
   --lms-lang-host <LANG=URL>  Assign an LM Studio host to a language
   --lms-model <name>       LM Studio model name. Env: LMS_MODEL
+  --lms-lang-model <LANG=MODEL>  Per-language LM Studio model override. Env: LMS_LANG_MODELS
   --lms-api-key <key>      LM Studio API key (Bearer token). Env: LMS_API_KEY (default: lm-studio)
+  --vllm-host <url>        vLLM server URL (single host). Env: VLLM_HOST
+  --vllm-hosts <url...>    Multiple vLLM hosts for parallel translation
+  --vllm-lang-host <LANG=URL>  Assign a vLLM host to a language
+  --vllm-model <name>      vLLM model name. Env: VLLM_MODEL
+  --vllm-lang-model <LANG=MODEL>  Per-language vLLM model override. Env: VLLM_LANG_MODELS
+  --vllm-api-key <key>     vLLM API key (Bearer token). Env: VLLM_API_KEY (default: vllm)
   --project <name>         Cache folder name — %TEMP%\po_translator_<name>
   --batch-size <n>         Entries per LLM request (default: 20)
   --timeout <seconds>      Request timeout (default: 120)
@@ -226,14 +260,14 @@ python scripts/translate.py --source-file Localization/Game/ja/Game.po --old-sou
 
 ## Multi-Host Parallel Translation
 
-When you have multiple LLM servers (Ollama and/or LM Studio), translation can be parallelised at two levels:
+When you have multiple LLM servers (Ollama, LM Studio, and/or vLLM), translation can be parallelised at two levels:
 
 | Level | How | Effect |
 |---|---|---|
 | **Language-level** | Multiple hosts, multiple target languages | Each language runs on its own host simultaneously |
 | **Batch-level** | Multiple hosts assigned to one language | Batches of entries are distributed across all hosts concurrently |
 
-Ollama and LM Studio hosts can be mixed freely in the same host pool.
+Ollama, LM Studio, and vLLM hosts can be mixed freely in the same host pool.
 
 ### Language-level: one host per language
 
@@ -246,9 +280,9 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 ### Batch-level: multiple hosts for one language
 
 ```powershell
-# English batches split across Ollama and LM Studio in parallel
+# English batches split across Ollama, LM Studio, and vLLM in parallel
 python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr `
-    --lang-host en=http://ollama1:11434 --lms-lang-host en=http://lmstudio:1234 `
+    --lang-host en=http://ollama1:11434 --lms-lang-host en=http://lmstudio:1234 --vllm-lang-host en=http://vllm:8000 `
     --lang-host fr=http://ollama2:11434
 ```
 
@@ -261,9 +295,13 @@ OLLAMA_HOSTS=http://server1:11434,http://server2:11434
 # LM Studio hosts (mixed into the pool alongside Ollama)
 LMS_HOSTS=http://lmstudio1:1234,http://lmstudio2:1234
 
+# vLLM hosts (mixed into the same pool)
+VLLM_HOSTS=http://vllm1:8000,http://vllm2:8000
+
 # Per-language overrides:
 OLLAMA_LANG_HOSTS=en=http://ollama1:11434,fr=http://ollama2:11434
 LMS_LANG_HOSTS=en=http://lmstudio1:1234
+VLLM_LANG_HOSTS=de=http://vllm1:8000
 ```
 
 See [User Manual — Section 6](docs/user-manual.md#6-multi-host-parallel-translation) for full details.
@@ -277,7 +315,7 @@ See [User Manual — Section 6](docs/user-manual.md#6-multi-host-parallel-transl
 | [Windows Easy Setup (JA)](docs/windows-ollama-easy-setup-ja.md) | Windows かんたんセットアップ (Ollama ローカル) |
 | [Windows Easy Setup (EN)](docs/windows-ollama-easy-setup-en.md) | Windows easy setup guide (Ollama local) |
 | [User Manual](docs/user-manual.md) | How to install, configure, and run translations (local and remote) |
-| [Admin Guide](docs/admin-guide.md) | How to set up and manage the shared Ollama server |
+| [Admin Guide](docs/admin-guide.md) | How to set up and manage shared Ollama / LM Studio servers and connect to an existing vLLM server |
 | [Cloudflare Setup](docs/cloudflare-setup.md) | Step-by-step manual for Cloudflare Tunnel + Service Auth |
 | [Design](docs/design.md) | System architecture, data flow, and component design |
 
@@ -287,7 +325,7 @@ See [User Manual — Section 6](docs/user-manual.md#6-multi-host-parallel-transl
 
 - Windows 10 / 11 (64-bit)
 - Python 3.9 or later
-- Ollama (installed by `install-ollama-local.ps1`) **or** LM Studio (installed manually from https://lmstudio.ai/)
+- Ollama (installed by `install-ollama-local.ps1`), LM Studio (installed manually from https://lmstudio.ai/), **or** access to an existing vLLM server
 - NVIDIA GPU with 8 GB+ VRAM recommended for local mode
 
 ---

@@ -28,15 +28,15 @@ This guide explains how to use POTranslatorLLM to translate `.po` localization f
 
 POTranslatorLLM translates `.po` (gettext) localization files using a Large Language Model (LLM) running locally on your computer or on a shared team server. No internet connection, cloud API key, or GitHub Copilot subscription is required.
 
-Supported LLM backends: **Ollama** and **LM Studio** (or both simultaneously in multi-host mode).
+Supported LLM backends: **Ollama**, **LM Studio**, and **vLLM** (they can also be mixed in multi-host mode).
 
 **Supported workflows:**
 
 | Mode | Backend | When to use |
 |---|---|---|
 | **Local mode** | Ollama or LM Studio | You have a capable GPU or CPU and want to run the LLM on your own machine |
-| **LAN mode** | Ollama or LM Studio | Your team has a shared server on the local network |
-| **External mode** | Ollama (via Cloudflare Tunnel) | The shared server is accessed from outside the LAN |
+| **LAN mode** | Ollama, LM Studio, or vLLM | Your team has a shared server on the local network |
+| **External mode** | Ollama (via Cloudflare Tunnel) or vLLM | The shared server is accessed from outside the LAN |
 
 ---
 
@@ -149,6 +149,32 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 
 ---
 
+## 4A. Quick Start — Existing vLLM Server
+
+Configure `.env` for an already-running vLLM server:
+
+```ini
+VLLM_HOST=http://192.168.1.100:8000
+VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_API_KEY=vllm
+```
+
+If the server requires authentication, replace `VLLM_API_KEY` with the real key. Otherwise any non-empty placeholder works.
+
+To confirm the model ID exposed by the server:
+
+```powershell
+curl http://192.168.1.100:8000/v1/models
+```
+
+Then run translation the same way:
+
+```powershell
+python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en
+```
+
+---
+
 ## 5. Quick Start — Remote Server Mode
 
 ### Ollama LAN / External Server
@@ -203,6 +229,13 @@ For LM Studio LAN access:
 LMS_HOST=http://192.168.1.100:1234
 LMS_MODEL=qwen2.5-7b-instruct
 LMS_API_KEY=<api-key-if-configured>
+```
+
+For vLLM server access:
+```ini
+VLLM_HOST=http://192.168.1.100:8000
+VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_API_KEY=<api-key-if-configured>
 ```
 
 ### Step 4: Run Translation
@@ -279,7 +312,7 @@ Output example:
 
 ## 7. Multi-Host Parallel Translation
 
-When translating into many languages, you can use multiple Ollama and/or LM Studio servers simultaneously to significantly reduce total translation time.
+When translating into many languages, you can use multiple Ollama, LM Studio, and/or vLLM servers simultaneously to significantly reduce total translation time.
 
 ### How it works
 
@@ -294,10 +327,10 @@ There are two levels of parallelism:
 | **Language-level** | Multiple target languages | Each language runs in its own thread concurrently |
 | **Batch-level** | Multiple qualifying hosts per language | Batches are distributed concurrently across all hosts assigned to that language |
 
-- **Ollama and LM Studio hosts can be mixed freely** — they are pooled together and treated the same way.
+- **Ollama, LM Studio, and vLLM hosts can be mixed freely** — they are pooled together and treated the same way.
 - Each language is assigned **all qualifying hosts** from the pool; batches are spread across them in parallel for maximum throughput.
-- You can **pin a language to specific hosts** with `OLLAMA_LANG_HOSTS` / `LMS_LANG_HOSTS` — those hosts are still probed and validated before use.
-- You can assign **different models to different languages** with `OLLAMA_LANG_MODELS` / `LMS_LANG_MODELS` — only hosts that have the required model are used for each language (see [Per-Language Model Selection](#per-language-model-selection) below).
+- You can **pin a language to specific hosts** with `OLLAMA_LANG_HOSTS` / `LMS_LANG_HOSTS` / `VLLM_LANG_HOSTS` — those hosts are still probed and validated before use.
+- You can assign **different models to different languages** with `OLLAMA_LANG_MODELS` / `LMS_LANG_MODELS` / `VLLM_LANG_MODELS` — only hosts that have the required model are used for each language (see [Per-Language Model Selection](#per-language-model-selection) below).
 
 ### Configuration — Ollama hosts via `.env`
 
@@ -325,6 +358,19 @@ LMS_MODEL=qwen2.5-7b-instruct
 LMS_API_KEY=lm-studio
 ```
 
+### Configuration — Mixed Ollama + LM Studio + vLLM via `.env`
+
+```ini
+OLLAMA_HOST=http://server1:11434
+OLLAMA_MODEL=qwen2.5:7b
+LMS_HOST=http://lmstudio1:1234
+LMS_MODEL=qwen2.5-7b-instruct
+LMS_API_KEY=lm-studio
+VLLM_HOST=http://vllm1:8000
+VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM_API_KEY=vllm
+```
+
 ### Configuration — via CLI
 
 ```powershell
@@ -335,6 +381,11 @@ python scripts/translate.py --folder Localization/Game --source-lang ja --target
 # Mixed: Ollama + LM Studio (en → Ollama, fr → LM Studio)
 python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr `
     --lang-host en=http://ollama:11434 --lms-lang-host fr=http://lmstudio:1234
+
+# Mixed: Ollama + LM Studio + vLLM
+python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr de `
+    --lang-host en=http://ollama:11434 --lms-lang-host fr=http://lmstudio:1234 `
+    --vllm-lang-host de=http://vllm:8000
 
 # Assign TWO hosts to English — batches distributed in parallel across both
 python scripts/translate.py --folder Localization/Game --source-lang ja --target-lang en fr `
@@ -460,6 +511,12 @@ python scripts/translate.py --source-file <current.po> [--old-source-file <old.p
 | `--lms-model <name>` | *(none)* | LM Studio model name. Env: `LMS_MODEL` |
 | `--lms-lang-model <LANG=MODEL>` | *(none)* | Use a specific LM Studio model for a target language. Repeat for multiple languages. Hosts without the model are skipped. Env: `LMS_LANG_MODELS` |
 | `--lms-api-key <key>` |`lm-studio` | LM Studio API key (Bearer token auth). Env: `LMS_API_KEY` |
+| `--vllm-host <url>` | *(none)* | vLLM server URL (single host). Env: `VLLM_HOST` |
+| `--vllm-hosts <url...>` | *(none)* | Multiple vLLM server URLs. Env: `VLLM_HOSTS` |
+| `--vllm-lang-host <LANG=URL>` | *(none)* | Assign a vLLM host to a specific language. Env: `VLLM_LANG_HOSTS` |
+| `--vllm-model <name>` | *(none)* | vLLM model name. Env: `VLLM_MODEL` |
+| `--vllm-lang-model <LANG=MODEL>` | *(none)* | Use a specific vLLM model for a target language. Repeat for multiple languages. Hosts without the model are skipped. Env: `VLLM_LANG_MODELS` |
+| `--vllm-api-key <key>` |`vllm` | vLLM API key (Bearer token auth). Env: `VLLM_API_KEY` |
 | `--batch-size <n>` | `20` | Entries per LLM request (reduce if you see errors) |
 | `--timeout <seconds>` | `120` | Max wait time per LLM request |
 | `--reset` | false | Discard previous progress and restart from scratch |
@@ -540,6 +597,14 @@ LMS_LANG_HOSTS=
 LMS_MODEL=
 LMS_LANG_MODELS=
 LMS_API_KEY=lm-studio
+
+# --- vLLM backend (optional) ---
+VLLM_HOST=
+VLLM_HOSTS=
+VLLM_LANG_HOSTS=
+VLLM_MODEL=
+VLLM_LANG_MODELS=
+VLLM_API_KEY=vllm
 
 # --- Translation settings ---
 TRANSLATE_BATCH_SIZE=20
@@ -811,22 +876,24 @@ Then re-run the setup script:
 - Verify the port in `.env` matches what LM Studio shows (default: 1234).
 - For LAN mode: check that port `1234` is open in the Windows Firewall (`Get-NetFirewallRule -DisplayName "LM Studio LLM Port 1234"`).
 
-### "401 Unauthorized" (LM Studio)
+### "401 Unauthorized" (LM Studio / vLLM)
 
-LM Studio has API authentication enabled. Set the correct API key in `.env`:
+The backend has API authentication enabled. Set the correct API key in `.env`:
 ```ini
 LMS_API_KEY=your-actual-api-key
+VLLM_API_KEY=your-actual-api-key
 ```
 
 ### "Model not found"
 
 - **Ollama:** Run `ollama list` (on the server for LAN mode) to see available models, or ask your administrator.
 - **LM Studio:** Open LM Studio and check which model is loaded. The model name in `LMS_MODEL` must match exactly. Query the API: `curl http://localhost:1234/v1/models`.
+- **vLLM:** Query the server directly and use the exact model ID it reports: `curl http://server:8000/v1/models`.
 
 ### Translation quality is poor
 
 - Try adding context: `--context "action RPG game dialogue, medical terminology"`
-- Try a larger model: `--model qwen2.5:14b` (Ollama) or `--lms-model qwen2.5-14b-instruct` (LM Studio)
+- Try a larger model: `--model qwen2.5:14b` (Ollama), `--lms-model qwen2.5-14b-instruct` (LM Studio), or a larger `--vllm-model`
 - Reduce batch size: `--batch-size 5` (sends fewer entries per request, may improve focus)
 
 ### Translation is very slow
